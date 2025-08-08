@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "cellpose-sam-gradio"
+version = "0.1.0"
+description = ""
+authors = ["fuji3to4 <sfujii@bio.kyutech.ac.jp>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.14"
+torch = {version = "^2.8.0+cu129", source = "torch_cu129"}
+torchvision = {version = "^0.23.0+cu129", source = "torch_cu129"}
+cellpose = ">=4"
+gradio = "^5.41.1"
+pandas = "^2.3.1"
+scipy = "^1.16.1"
+scikit-image = "^0.25.2"
+
+
+
+[[tool.poetry.source]]
+name = "torch_cu129"
+url = "https://download.pytorch.org/whl/cu129"
+priority = "explicit"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
