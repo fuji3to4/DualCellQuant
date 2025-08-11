@@ -339,10 +339,11 @@ def integrate_and_quantify(
 # -----------------------
 
 def build_ui():
-    with gr.Blocks(title="Cellpose2Quant") as demo:
+    with gr.Blocks(title="DualCellQuant") as demo:
         gr.Markdown(
             """
-            # Cellpose2Quant: Stepwise 2-channel Cell Image Quantification using Cellpose-SAM
+            # 🔬 **DualCellQuant**
+            *Segment, filter, and compare cells across two fluorescence channels*
             1. **Run Cellpose-SAM** to obtain segmentation masks.
             2. **Apply Target mask** conditions.
             3. **Apply Reference mask** conditions.
