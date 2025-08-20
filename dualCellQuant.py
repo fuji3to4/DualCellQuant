@@ -457,6 +457,6 @@ def build_ui():
         )
     return demo
 
-if __name__ == "__main__":
-    demo = build_ui()
-    demo.queue().launch()
+# if __name__ == "__main__":
+#     demo = build_ui()
+#     demo.queue().launch()
