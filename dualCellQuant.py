@@ -521,7 +521,7 @@ def build_ui():
                     rad_in = gr.Slider(0.0, 120.0, value=0.0, step=1.0, label="Radial inner % (0=中心)")
                     rad_out = gr.Slider(0.0, 120.0, value=100.0, step=1.0, label="Radial outer % (100=境界)")
                     rad_min_obj = gr.Slider(0, 2000, value=50, step=10, label="Remove small objects (px)")
-                run_rad_btn = gr.Button("2b. Build Radial mask")
+                run_rad_btn = gr.Button("2. Build Radial mask")
                 rad_overlay = gr.Image(type="pil", label="Radial mask overlay", width=600)
                 rad_file = gr.File(label="Download radial mask (bool .npy)")
                 rad_lbl_file = gr.File(label="Download radial labels (.npy)")
@@ -534,7 +534,7 @@ def build_ui():
                     tgt_sat_limit = gr.Slider(0.80, 1.0, value=0.98, step=0.001, label="Saturation limit (Target<limit)")
                     tgt_pct = gr.Slider(0.0, 100.0, value=75.0, step=1.0, label="Percentile (Top p%)")
                     tgt_min_obj = gr.Slider(0, 2000, value=50, step=10, label="Remove small objects (px)")
-                run_tgt_btn = gr.Button("2. Apply Target mask")
+                run_tgt_btn = gr.Button("3. Apply Target mask")
                 tgt_overlay = gr.Image(type="pil", label="Target mask overlay",width=600)
                 tgt_file = gr.File(label="Download target mask (.npy)")
 
@@ -544,11 +544,11 @@ def build_ui():
                     ref_sat_limit = gr.Slider(0.80, 1.0, value=0.98, step=0.001, label="Saturation limit (Reference<limit)")
                     ref_pct = gr.Slider(0.0, 100.0, value=75.0, step=1.0, label="Percentile (Top p%)")
                     ref_min_obj = gr.Slider(0, 2000, value=50, step=10, label="Remove small objects (px)")
-                run_ref_btn = gr.Button("3. Apply Reference mask")
+                run_ref_btn = gr.Button("4. Apply Reference mask")
                 ref_overlay = gr.Image(type="pil", label="Reference mask overlay",width=600)
                 ref_file = gr.File(label="Download reference mask (.npy)")
 
-                integrate_btn = gr.Button("4. Integrate & Quantify")
+                integrate_btn = gr.Button("5. Integrate & Quantify")
 
                 final_overlay = gr.Image(type="pil", label="Final overlay (AND mask)",width=600)
                 
