@@ -1,4 +1,4 @@
-# /opt/dualcellquant/serve.py
+# dualcellquant/serve.py
 from fastapi import FastAPI
 import gradio as gr
 from dualCellQuant import build_ui  # ← 既存の build_ui() を利用
