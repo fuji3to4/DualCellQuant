@@ -22,6 +22,45 @@ import scipy.ndimage as ndi
 from cellpose import models
 
 # -----------------------
+# Display/label settings (adjustable via UI)
+# -----------------------
+LABEL_SCALE: float = 1.8  # default label size multiplier (Linux-friendly)
+
+def _load_font(point_size: int) -> ImageFont.ImageFont:
+    """Robust TrueType font loader with common cross-platform fallbacks.
+
+    Tries a list of typical TTF paths; falls back to default bitmap font if none found.
+    """
+    candidates = [
+        # Generic names (might resolve via fontconfig)
+        "DejaVuSans.ttf",
+        "Arial.ttf",
+        "LiberationSans-Regular.ttf",
+        "NotoSans-Regular.ttf",
+        # Linux common paths
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        # macOS
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        # Windows
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/ARIALUNI.TTF",
+    ]
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, point_size)
+        except Exception:
+            continue
+    # Last resort
+    try:
+        return ImageFont.truetype("arial.ttf", point_size)
+    except Exception:
+        return ImageFont.load_default()
+
+# -----------------------
 # Model lazy loader
 # -----------------------
 _MODEL: Optional[models.CellposeModel] = None
@@ -191,21 +230,21 @@ def vivid_label_image(masks: np.ndarray) -> Image.Image:
 def annotate_ids(img: Image.Image, masks: np.ndarray) -> Image.Image:
     draw = ImageDraw.Draw(img)
     w, h = img.size
-    # Larger, more legible font size
-    fsize = max(14, int(min(w, h) * 0.035))
-    try:
-        font = ImageFont.truetype("arial.ttf", fsize)
-    except Exception:
-        font = ImageFont.load_default()
+    # Larger, more legible font size with scalable factor
+    base = max(14, int(min(w, h) * 0.035))
+    fsize = max(12, int(base * float(LABEL_SCALE)))
+    font = _load_font(fsize)
     props = measure.regionprops(masks)
     for p in props:
         lab = p.label
         cy, cx = p.centroid
         x, y = int(cx), int(cy)
         text = str(lab)
-        # Thicker outline for visibility
+        # Thicker outline for visibility (scale with font size)
         outline_color = (0, 0, 0)
-        for dx, dy in [(-2,0),(2,0),(0,-2),(0,2),(-2,-2),(2,2),(-2,2),(2,-2)]:
+        off = max(2, fsize // 12)
+        offsets = [(-off,0),(off,0),(0,-off),(0,off),(-off,-off),(off,off),(-off,off),(off,-off)]
+        for dx, dy in offsets:
             draw.text((x+dx, y+dy), text, fill=outline_color, font=font, anchor="mm")
         # Bright fill color to stand out on grayscale background
         fill_color = (255, 255, 0)  # yellow
@@ -702,6 +741,9 @@ def build_ui():
                 px_w = gr.Number(value=1.0, label="Pixel width (µm)")
                 px_h = gr.Number(value=1.0, label="Pixel height (µm)")
 
+                # Label size control (helpful for Linux servers)
+                label_scale = gr.Slider(0.5, 5.0, value=float(LABEL_SCALE), step=0.1, label="Label size scale")
+
                 final_overlay = gr.Image(type="pil", label="Final overlay (AND mask)",width=600)
                 
                 # and_npy_state = gr.File(label="Download AND mask (.npy)")
@@ -760,6 +802,7 @@ def build_ui():
                 tgt_chan, tgt_mask_mode, tgt_sat_limit, tgt_pct, tgt_min_obj,
                 ref_chan, ref_mask_mode, ref_sat_limit, ref_pct, ref_min_obj,
                 px_w, px_h,
+                label_scale,
             ],
             js=f"""
             () => {{
@@ -773,6 +816,7 @@ def build_ui():
                         tgt_chan: 'gray', tgt_mask_mode: 'global_percentile', tgt_sat_limit: 254, tgt_pct: 75.0, tgt_min_obj: 50,
                         ref_chan: 'gray', ref_mask_mode: 'global_percentile', ref_sat_limit: 254, ref_pct: 75.0, ref_min_obj: 50,
                         px_w: 1.0, px_h: 1.0,
+                        label_scale: {float(LABEL_SCALE)},
                     }};
                     let s = raw ? {{...d, ...JSON.parse(raw)}} : d;
                     // Backward compatibility: map numeric channels to strings if needed
@@ -804,6 +848,7 @@ def build_ui():
                         s.ref_min_obj,
                         s.px_w,
                         s.px_h,
+                        s.label_scale,
                     ];
                 }} catch (e) {{
                     console.warn('Failed to load saved settings:', e);
@@ -815,6 +860,7 @@ def build_ui():
                         'gray', 'global_percentile', 254, 75.0, 50,
                         'gray', 'global_percentile', 254, 75.0, 50,
                         1.0, 1.0,
+                        {float(LABEL_SCALE)},
                     ];
                 }}
             }}
@@ -870,6 +916,17 @@ def build_ui():
         # Persist pixel size settings
         _persist_change(px_w, 'px_w')
         _persist_change(px_h, 'px_h')
+        _persist_change(label_scale, 'label_scale')
+
+        # Update global label scale when slider changes
+        def _set_label_scale(v: float):
+            global LABEL_SCALE
+            try:
+                LABEL_SCALE = float(v)
+            except Exception:
+                pass
+            return None
+        label_scale.change(fn=_set_label_scale, inputs=[label_scale], outputs=[])
 
         # Reset button clears stored settings
         reset_settings.click(
@@ -882,6 +939,7 @@ def build_ui():
                 tgt_chan, tgt_mask_mode, tgt_sat_limit, tgt_pct, tgt_min_obj,
                 ref_chan, ref_mask_mode, ref_sat_limit, ref_pct, ref_min_obj,
                 px_w, px_h,
+                label_scale,
             ],
             js=f"""
             () => {{
@@ -898,6 +956,7 @@ def build_ui():
                     'gray', 'global_percentile', 254, 75.0, 50,
                     'gray', 'global_percentile', 254, 75.0, 50,
                     1.0, 1.0,
+                    {float(LABEL_SCALE)},
                 ];
             }}
             """,
