@@ -748,7 +748,7 @@ def build_ui():
                 # and_npy_state = gr.File(label="Download AND mask (.npy)")
                 and_npy_state = gr.State()
                 mask_tiff = gr.File(label="Download AND mask (TIFF)")
-                table = gr.Dataframe(label="Per-cell intensities & ratios", interactive=False)
+                table = gr.Dataframe(label="Per-cell intensities & ratios", interactive=False,pinned_columns=1)
                 csv_file = gr.File(label="Download CSV")
                 
                 tgt_on_and_img = gr.Image(type="pil", label="Target on AND mask", width=600)
