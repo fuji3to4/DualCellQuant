@@ -744,6 +744,270 @@ def radial_profile_analysis(
     return df, tmp_csv.name, prof_plot
 
 
+def radial_profile_single(
+    target_img: Image.Image,
+    reference_img: Image.Image,
+    masks: np.ndarray,
+    label: int,
+    tgt_chan: int,
+    ref_chan: int,
+    start_pct: float,
+    end_pct: float,
+    step_pct: float,
+    pp_bg_enable: bool,
+    pp_bg_radius: int,
+    pp_norm_enable: bool,
+    pp_norm_method: str,
+    *,
+    bg_mode: str = "rolling",
+    bg_dark_pct: float = 5.0,
+    manual_tar_bg: float | None = None,
+    manual_ref_bg: float | None = None,
+):
+    # Preprocess once
+    tgt_nat = preprocess_for_processing(
+        target_img, use_native_scale=True,
+        bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+        norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+        manual_background=manual_tar_bg,
+    )
+    ref_nat = preprocess_for_processing(
+        reference_img, use_native_scale=True,
+        bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+        norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+        manual_background=manual_ref_bg,
+    )
+    tgt_gray = extract_single_channel(tgt_nat, tgt_chan)
+    ref_gray = extract_single_channel(ref_nat, ref_chan)
+    labels_all = np.unique(masks); labels_all = labels_all[labels_all > 0]
+    if int(label) not in set(map(int, labels_all.tolist())):
+        raise ValueError(f"Label {label} not found in masks")
+    lab = int(label)
+    cell = (masks == lab)
+    if not np.any(cell):
+        raise ValueError(f"Label {lab} has no pixels")
+    di = ndi.distance_transform_edt(cell)
+    dmax = float(di.max())
+    if dmax <= 0:
+        raise ValueError("Invalid cell (zero max distance)")
+    tin = 1.0 - (di / dmax)
+    # outside ring assigned to this label
+    fg = masks > 0
+    dist_bg, idx = ndi.distance_transform_edt(~fg, return_indices=True)
+    nearest_label = masks[idx[0], idx[1]]
+    out_lab = (~fg) & (nearest_label == lab)
+    tout = None
+    if np.any(out_lab):
+        tout = np.zeros_like(tin, dtype=np.float32)
+        tout[out_lab] = 1.0 + (dist_bg[out_lab].astype(np.float32) / dmax)
+
+    # Bins
+    s = float(start_pct); e = float(end_pct); st = float(step_pct)
+    if st <= 0: st = 5.0
+    if e < s: s, e = e, s
+    edges_pct = np.arange(s, e + 1e-6, st, dtype=float)
+    if edges_pct[-1] < e:
+        edges_pct = np.append(edges_pct, e)
+    edges = edges_pct / 100.0
+    nbins = max(0, len(edges) - 1)
+    if nbins == 0:
+        raise ValueError("Invalid band settings: no bins formed")
+
+    rows = []
+    for k in range(nbins):
+        a = edges[k]; b = edges[k+1]
+        if k == nbins - 1:
+            idx_in = cell & (tin >= a) & (tin <= b)
+        else:
+            idx_in = cell & (tin >= a) & (tin < b)
+        if tout is not None:
+            if k == nbins - 1:
+                idx_out = out_lab & (tout >= a) & (tout <= b)
+            else:
+                idx_out = out_lab & (tout >= a) & (tout < b)
+            idx_band = idx_in | idx_out
+        else:
+            idx_band = idx_in
+        n = int(np.count_nonzero(idx_band))
+        if n == 0:
+            rows.append({
+                "label": lab,
+                "band_start_pct": edges_pct[k],
+                "band_end_pct": edges_pct[k+1],
+                "center_pct": (edges_pct[k] + edges_pct[k+1]) / 2.0,
+                "count_px": 0,
+                "mean_target": np.nan,
+                "mean_reference": np.nan,
+                "mean_ratio_T_over_R": np.nan,
+            })
+            continue
+        mean_t = float(np.mean(tgt_gray[idx_band]))
+        mean_r = float(np.mean(ref_gray[idx_band]))
+        r = ref_gray[idx_band]
+        valid = r > 0
+        if np.count_nonzero(valid) > 0:
+            ratio_mean = float(np.mean(tgt_gray[idx_band][valid] / r[valid]))
+        else:
+            ratio_mean = np.nan
+        rows.append({
+            "label": lab,
+            "band_start_pct": edges_pct[k],
+            "band_end_pct": edges_pct[k+1],
+            "center_pct": (edges_pct[k] + edges_pct[k+1]) / 2.0,
+            "count_px": n,
+            "mean_target": mean_t,
+            "mean_reference": mean_r,
+            "mean_ratio_T_over_R": ratio_mean,
+        })
+
+    df = pd.DataFrame(rows)
+    tmp_csv = tempfile.NamedTemporaryFile(delete=False, suffix=f"_radial_profile_label_{lab}.csv")
+    df.to_csv(tmp_csv.name, index=False)
+
+    # Plot
+    fig, ax1 = plt.subplots(figsize=(6, 4))
+    ax1.plot(df["center_pct"], df["mean_target"], label=f"Target (L{lab})", color="tab:red")
+    ax1.plot(df["center_pct"], df["mean_reference"], label=f"Reference (L{lab})", color="tab:blue")
+    ax1.set_xlabel("Radial % (0=center, 100=boundary)")
+    ax1.set_ylabel("Mean intensity")
+    ax1.grid(True, alpha=0.3)
+    ax2 = ax1.twinx()
+    ax2.plot(df["center_pct"], df["mean_ratio_T_over_R"], label="T/R", color="tab:green", linestyle="--")
+    ax2.set_ylabel("Mean ratio (T/R)")
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc="best")
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+    plot_img = Image.open(buf).copy()
+    buf.close()
+    return df, tmp_csv.name, plot_img
+
+
+def radial_profile_all_cells(
+    target_img: Image.Image,
+    reference_img: Image.Image,
+    masks: np.ndarray,
+    tgt_chan: int,
+    ref_chan: int,
+    start_pct: float,
+    end_pct: float,
+    step_pct: float,
+    pp_bg_enable: bool,
+    pp_bg_radius: int,
+    pp_norm_enable: bool,
+    pp_norm_method: str,
+    *,
+    bg_mode: str = "rolling",
+    bg_dark_pct: float = 5.0,
+    manual_tar_bg: float | None = None,
+    manual_ref_bg: float | None = None,
+):
+    # Preprocess once
+    tgt_nat = preprocess_for_processing(
+        target_img, use_native_scale=True,
+        bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+        norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+        manual_background=manual_tar_bg,
+    )
+    ref_nat = preprocess_for_processing(
+        reference_img, use_native_scale=True,
+        bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+        norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+        manual_background=manual_ref_bg,
+    )
+    tgt_gray = extract_single_channel(tgt_nat, tgt_chan)
+    ref_gray = extract_single_channel(ref_nat, ref_chan)
+    labels = np.unique(masks); labels = labels[labels > 0]
+    if labels.size == 0:
+        raise ValueError("No cells found in masks.")
+    # For outside assignment
+    fg = masks > 0
+    dist_bg, idx = ndi.distance_transform_edt(~fg, return_indices=True)
+    nearest_label = masks[idx[0], idx[1]]
+
+    # Bins
+    s = float(start_pct); e = float(end_pct); st = float(step_pct)
+    if st <= 0: st = 5.0
+    if e < s: s, e = e, s
+    edges_pct = np.arange(s, e + 1e-6, st, dtype=float)
+    if edges_pct[-1] < e:
+        edges_pct = np.append(edges_pct, e)
+    edges = edges_pct / 100.0
+    nbins = max(0, len(edges) - 1)
+    if nbins == 0:
+        raise ValueError("Invalid band settings: no bins formed")
+
+    rows = []
+    for lab in labels:
+        cell = (masks == lab)
+        if not np.any(cell):
+            continue
+        di = ndi.distance_transform_edt(cell)
+        dmax = float(di.max())
+        if dmax <= 0:
+            continue
+        tin = 1.0 - (di / dmax)
+        out_lab = (~fg) & (nearest_label == lab)
+        tout = None
+        if np.any(out_lab):
+            tout = np.zeros_like(tin, dtype=np.float32)
+            tout[out_lab] = 1.0 + (dist_bg[out_lab].astype(np.float32) / dmax)
+        for k in range(nbins):
+            a = edges[k]; b = edges[k+1]
+            if k == nbins - 1:
+                idx_in = cell & (tin >= a) & (tin <= b)
+            else:
+                idx_in = cell & (tin >= a) & (tin < b)
+            if tout is not None:
+                if k == nbins - 1:
+                    idx_out = out_lab & (tout >= a) & (tout <= b)
+                else:
+                    idx_out = out_lab & (tout >= a) & (tout < b)
+                idx_band = idx_in | idx_out
+            else:
+                idx_band = idx_in
+            n = int(np.count_nonzero(idx_band))
+            if n == 0:
+                rows.append({
+                    "label": int(lab),
+                    "band_start_pct": edges_pct[k],
+                    "band_end_pct": edges_pct[k+1],
+                    "center_pct": (edges_pct[k] + edges_pct[k+1]) / 2.0,
+                    "count_px": 0,
+                    "mean_target": np.nan,
+                    "mean_reference": np.nan,
+                    "mean_ratio_T_over_R": np.nan,
+                })
+                continue
+            mean_t = float(np.mean(tgt_gray[idx_band]))
+            mean_r = float(np.mean(ref_gray[idx_band]))
+            r = ref_gray[idx_band]
+            valid = r > 0
+            if np.count_nonzero(valid) > 0:
+                ratio_mean = float(np.mean(tgt_gray[idx_band][valid] / r[valid]))
+            else:
+                ratio_mean = np.nan
+            rows.append({
+                "label": int(lab),
+                "band_start_pct": edges_pct[k],
+                "band_end_pct": edges_pct[k+1],
+                "center_pct": (edges_pct[k] + edges_pct[k+1]) / 2.0,
+                "count_px": n,
+                "mean_target": mean_t,
+                "mean_reference": mean_r,
+                "mean_ratio_T_over_R": ratio_mean,
+            })
+
+    df = pd.DataFrame(rows).sort_values(["label", "center_pct"]) if rows else pd.DataFrame()
+    tmp_csv = tempfile.NamedTemporaryFile(delete=False, suffix="_radial_profile_all_cells.csv")
+    df.to_csv(tmp_csv.name, index=False)
+    return df, tmp_csv.name
+
+
 # -----------------------
 # Step 3/4: Apply mask for target or reference (raw)
 # -----------------------
@@ -996,7 +1260,7 @@ def build_ui():
                         with gr.Accordion("Settings", open=False):
                             reset_settings = gr.Button("Reset Settings",scale=1)
                             label_scale = gr.Slider(0.0, 5.0, value=float(LABEL_SCALE), step=0.1, label="Label size scale (0=hidden)")
-                        with gr.Accordion("Segmentation params", open=False):
+                        with gr.Accordion("Segmentation params", open=True):
                             seg_source = gr.Radio(["target","reference"], value="target", label="Segment on")
                             seg_chan = gr.Radio(["gray","R","G","B"], value="gray", label="Segmentation channel")
                             diameter = gr.Slider(0, 200, value=0, step=1, label="Diameter (px, 0=auto)")
@@ -1009,7 +1273,7 @@ def build_ui():
                             mask_img = gr.Image(type="pil", label="Segmentation label image", width=600)
                         seg_tiff_file = gr.File(label="Download masks (label TIFF)")
                         # Radial mask controls are moved to the bottom (after Integrate)
-                        with gr.Accordion("Apply mask", open=False):
+                        with gr.Accordion("Apply mask", open=True):
                             with gr.Row():
                                 with gr.Column():
                                     gr.Markdown("**Target mask settings**")
@@ -1034,7 +1298,7 @@ def build_ui():
                             with gr.Column():
                                 ref_overlay = gr.Image(type="pil", label="Reference mask overlay", width=600)
                                 ref_tiff = gr.File(label="Download reference mask (TIFF)")
-                        with gr.Accordion("Integrate & Quantify", open=False):
+                        with gr.Accordion("Integrate & Quantify", open=True):
                             with gr.Column():
                                 pp_bg_enable = gr.Checkbox(value=False, label="Background correction")
                                 pp_bg_mode = gr.Dropdown(["rolling","dark_subtract","manual"], value="dark_subtract", label="BG method")
@@ -1069,7 +1333,7 @@ def build_ui():
                             ref_on_and_img = gr.Image(type="pil", label="Reference on AND mask", width=600)
                             ratio_img = gr.Image(type="pil", label="Ratio (Target/Reference) on AND mask", width=600)
                         # Radial mask section moved here (after integration)
-                        with gr.Accordion("Radial mask (optional, after integration)", open=False):
+                        with gr.Accordion("Radial mask (optional, after integration)", open=True):
                             rad_in = gr.Slider(0.0, 150.0, value=0.0, step=1.0, label="Radial inner % (0=中心)")
                             rad_out = gr.Slider(0.0, 150.0, value=100.0, step=1.0, label="Radial outer % (100=境界)")
                             rad_min_obj = gr.Slider(0, 2000, value=50, step=10, label="Remove small objects (px)")
@@ -1090,15 +1354,22 @@ def build_ui():
                             radial_ref_on_and_img = gr.Image(type="pil", label="Reference on Radial AND mask", width=600)
                             radial_ratio_img = gr.Image(type="pil", label="Ratio (Target/Reference) on Radial AND mask", width=600)
                         # Radial profile (banded) section
-                        with gr.Accordion("Radial intensity profile (banded)", open=False):
+                        with gr.Accordion("Radial intensity profile", open=True):
                             prof_start = gr.Number(value=0.0, label="Start %", scale=1)
                             prof_end = gr.Number(value=150.0, label="End %", scale=1)
                             prof_step = gr.Number(value=5.0, label="Step %", scale=1)
                         run_prof_btn = gr.Button("6. Compute Radial profile")
-                        profile_table = gr.Dataframe(label="Radial profile (mean across cells)", interactive=False, pinned_columns=1)
-                        profile_csv = gr.File(label="Download radial profile CSV")
-                        profile_plot = gr.Image(type="pil", label="Radial profile plot", width=800)
                         
+                        with gr.Accordion("Label for single-cell profile", open=True):
+                                prof_label = gr.Number(value=1, label="Label for single-cell profile", scale=1)
+                        
+                        run_prof_single_btn = gr.Button("6b. Single-cell Radial profile (plot)")
+                        profile_table = gr.Dataframe(label="Radial profile (mean across cells)", interactive=False, pinned_columns=1)
+                        run_prof_all_btn = gr.Button("6c. Export all-cells Radial profile (CSV)")
+                        
+                        
+                        profile_plot = gr.Image(type="pil", label="Radial profile plot", width=800)
+                        profile_csv = gr.File(label="Download radial profile CSV")
 
                 # Segmentation
                 def _run_seg(tgt_img, ref_img, seg_source, seg_chan, diameter, flow_th, cellprob_th, use_gpu):
@@ -1145,6 +1416,40 @@ def build_ui():
                     fn=_radial_profile_cb,
                     inputs=[tgt, ref, masks_state, tgt_chan, ref_chan, prof_start, prof_end, prof_step, pp_bg_enable, pp_bg_mode, pp_bg_radius, pp_dark_pct, pp_norm_enable, pp_norm_method, bak_tar, bak_ref],
                     outputs=[profile_table, profile_csv, profile_plot],
+                )
+                def _radial_profile_single_cb(tgt_img, ref_img, masks, label, tchan, rchan, s, e, st, bg_en, bg_mode, bg_r, dark_pct, nm_en, nm_m, man_t, man_r):
+                    bgm = str(bg_mode)
+                    mt = float(man_t) if (bg_en and bgm == "manual") else None
+                    mr = float(man_r) if (bg_en and bgm == "manual") else None
+                    df, csv_path, plot_img = radial_profile_single(
+                        tgt_img, ref_img, masks, int(label), tchan, rchan,
+                        float(s), float(e), float(st),
+                        bool(bg_en), int(bg_r), bool(nm_en), nm_m,
+                        bg_mode=str(bg_mode), bg_dark_pct=float(dark_pct),
+                        manual_tar_bg=mt, manual_ref_bg=mr,
+                    )
+                    return plot_img, csv_path
+                run_prof_single_btn.click(
+                    fn=_radial_profile_single_cb,
+                    inputs=[tgt, ref, masks_state, prof_label, tgt_chan, ref_chan, prof_start, prof_end, prof_step, pp_bg_enable, pp_bg_mode, pp_bg_radius, pp_dark_pct, pp_norm_enable, pp_norm_method, bak_tar, bak_ref],
+                    outputs=[profile_plot, profile_csv],
+                )
+                def _radial_profile_all_cb(tgt_img, ref_img, masks, tchan, rchan, s, e, st, bg_en, bg_mode, bg_r, dark_pct, nm_en, nm_m, man_t, man_r):
+                    bgm = str(bg_mode)
+                    mt = float(man_t) if (bg_en and bgm == "manual") else None
+                    mr = float(man_r) if (bg_en and bgm == "manual") else None
+                    df, csv_path = radial_profile_all_cells(
+                        tgt_img, ref_img, masks, tchan, rchan,
+                        float(s), float(e), float(st),
+                        bool(bg_en), int(bg_r), bool(nm_en), nm_m,
+                        bg_mode=str(bg_mode), bg_dark_pct=float(dark_pct),
+                        manual_tar_bg=mt, manual_ref_bg=mr,
+                    )
+                    return df, csv_path
+                run_prof_all_btn.click(
+                    fn=_radial_profile_all_cb,
+                    inputs=[tgt, ref, masks_state, tgt_chan, ref_chan, prof_start, prof_end, prof_step, pp_bg_enable, pp_bg_mode, pp_bg_radius, pp_dark_pct, pp_norm_enable, pp_norm_method, bak_tar, bak_ref],
+                    outputs=[profile_table, profile_csv],
                 )
                 # Target/Reference masking (no ROI coupling)
                 def _apply_mask_generic(img, m, ch, sat, mode, p, mino, name):
@@ -1246,6 +1551,7 @@ def build_ui():
                         tgt_chan, tgt_mask_mode, tgt_sat_limit, tgt_pct, tgt_min_obj,
                         ref_chan, ref_mask_mode, ref_sat_limit, ref_pct, ref_min_obj,
                         px_w, px_h,
+                        prof_start, prof_end, prof_step,
                         label_scale,
                     ],
                     js=f"""
@@ -1254,21 +1560,18 @@ def build_ui():
                             const raw = localStorage.getItem('{SETTINGS_KEY}');
                             const d = {{
                                 seg_source: 'target', seg_chan: 'gray', diameter: 0, flow_th: 0.4, cellprob_th: 0.0, use_gpu: true,
-                                    s.prof_start,
-                                    s.prof_end,
-                                    s.prof_step,
                                 pp_bg_enable: false, pp_bg_mode: 'rolling', pp_bg_radius: 50, pp_dark_pct: 5.0, pp_norm_enable: false, pp_norm_method: 'z-score',
                                 rad_in: 0.0, rad_out: 100.0, rad_min_obj: 50,
                                 tgt_chan: 'gray', tgt_mask_mode: 'global_percentile', tgt_sat_limit: 254, tgt_pct: 75.0, tgt_min_obj: 50,
                                 ref_chan: 'gray', ref_mask_mode: 'global_percentile', ref_sat_limit: 254, ref_pct: 75.0, ref_min_obj: 50,
                                 px_w: 1.0, px_h: 1.0,
+                                prof_start: 0.0, prof_end: 150.0, prof_step: 5.0,
                                 label_scale: {float(LABEL_SCALE)},
                             }};
                             let s = raw ? {{...d, ...JSON.parse(raw)}} : d;
                             const mapChan = (v) => ({{0:'gray',1:'R',2:'G',3:'B'}})[v] ?? v;
                             s.seg_chan = mapChan(s.seg_chan);
-                                    1.0, 1.0,
-                                    0.0, 150.0, 5.0,
+                            s.tgt_chan = mapChan(s.tgt_chan);
                             s.ref_chan = mapChan(s.ref_chan);
                             return [
                                 s.seg_source,
@@ -1298,6 +1601,9 @@ def build_ui():
                                 s.ref_min_obj,
                                 s.px_w,
                                 s.px_h,
+                                s.prof_start,
+                                s.prof_end,
+                                s.prof_step,
                                 s.label_scale,
                             ];
                         }} catch (e) {{
@@ -1309,6 +1615,7 @@ def build_ui():
                                 'gray', 'global_percentile', 254, 75.0, 50,
                                 'gray', 'global_percentile', 254, 75.0, 50,
                                 1.0, 1.0,
+                                0.0, 150.0, 5.0,
                                 {float(LABEL_SCALE)},
                             ];
                         }}
