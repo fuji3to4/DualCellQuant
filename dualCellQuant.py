@@ -612,6 +612,7 @@ def integrate_and_quantify(
     manual_tar_bg: float | None = None,
     manual_ref_bg: float | None = None,
     roi_mask: np.ndarray | None = None,
+    roi_labels: np.ndarray | None = None,
 ):
     if masks is None or tgt_mask is None or ref_mask is None:
         raise ValueError("Run previous steps first.")
@@ -647,9 +648,26 @@ def integrate_and_quantify(
     ref_gray_vis = extract_single_channel(ref_vis, ref_chan)
     tgt_gray_nat = extract_single_channel(tgt_nat, tgt_chan)
     ref_gray_nat = extract_single_channel(ref_nat, ref_chan)
+    # Base AND mask (inside cells only)
     and_mask = tgt_mask & ref_mask
-    if roi_mask is not None:
-        and_mask = and_mask & roi_mask
+    # Build a selection mask for visualization and measurement.
+    # If roi_labels provided (from radial), include outside-of-cell ring per cell label.
+    selection_mask = None
+    if roi_mask is not None and roi_labels is not None:
+        selection_mask = np.zeros_like(and_mask, dtype=bool)
+        labels = np.unique(masks); labels = labels[labels > 0]
+        for lab in labels:
+            cell = (masks == lab)
+            # inside: respect AND mask gating within cell and ROI
+            inside = and_mask & cell & roi_mask & (roi_labels == lab)
+            # outside: ROI-labeled region assigned to this cell and outside the cell
+            outside = (roi_mask & (roi_labels == lab) & (~cell))
+            selection_mask |= (inside | outside)
+    elif roi_mask is not None:
+        # Without labels, just intersect ROI with AND mask
+        selection_mask = and_mask & roi_mask
+    else:
+        selection_mask = and_mask
     labels = np.unique(masks); labels = labels[labels > 0]
     try:
         px_area_um2 = float(pixel_width_um) * float(pixel_height_um)
@@ -658,7 +676,15 @@ def integrate_and_quantify(
     rows = []
     for lab in labels:
         cell = masks == lab
-        idx = and_mask & cell
+        if roi_mask is not None and roi_labels is not None:
+            # Per-label selection includes ROI outside the cell for this label
+            idx_inside = and_mask & cell & roi_mask & (roi_labels == lab)
+            idx_out = roi_mask & (roi_labels == lab) & (~cell)
+            idx = idx_inside | idx_out
+        elif roi_mask is not None:
+            idx = (and_mask & roi_mask) & cell
+        else:
+            idx = and_mask & cell
         area_cell_px = int(cell.sum())
         area_and_px = int(idx.sum())
         area_cell_um2 = float(area_cell_px) * px_area_um2
@@ -712,17 +738,17 @@ def integrate_and_quantify(
         df = df[["label"] + [c for c in df.columns if c != "label"]]
     tmp_csv = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
     df.to_csv(tmp_csv.name, index=False)
-    overlay_tar = colorize_overlay(tgt_gray_vis, masks, and_mask)
+    overlay_tar = colorize_overlay(tgt_gray_vis, masks, selection_mask)
     overlay_tar = annotate_ids(overlay_tar, masks)
-    overlay_ref = colorize_overlay(ref_gray_vis, masks, and_mask)
+    overlay_ref = colorize_overlay(ref_gray_vis, masks, selection_mask)
     overlay_ref = annotate_ids(overlay_ref, masks)
-    and_tiff = save_bool_mask_tiff(and_mask, "and_mask")
-    tgt_on_and = Image.fromarray((np.clip(np.where(and_mask, tgt_gray_vis, 0.0), 0, 1) * 255).astype(np.uint8))
-    ref_on_and = Image.fromarray((np.clip(np.where(and_mask, ref_gray_vis, 0.0), 0, 1) * 255).astype(np.uint8))
+    and_tiff = save_bool_mask_tiff(selection_mask, "and_mask")
+    tgt_on_and = Image.fromarray((np.clip(np.where(selection_mask, tgt_gray_vis, 0.0), 0, 1) * 255).astype(np.uint8))
+    ref_on_and = Image.fromarray((np.clip(np.where(selection_mask, ref_gray_vis, 0.0), 0, 1) * 255).astype(np.uint8))
     valid = (ref_gray_vis > 0)
     ratio_img = np.full_like(tgt_gray_vis, np.nan, dtype=np.float32)
     ratio_img[valid] = tgt_gray_vis[valid] / ref_gray_vis[valid]
-    ratio_masked = np.where(and_mask, ratio_img, np.nan)
+    ratio_masked = np.where(selection_mask, ratio_img, np.nan)
     finite_vals = ratio_masked[np.isfinite(ratio_masked)]
     if finite_vals.size > 0:
         vmin = np.percentile(finite_vals, 1.0)
@@ -837,8 +863,8 @@ def build_ui():
                             ratio_img = gr.Image(type="pil", label="Ratio (Target/Reference) on AND mask", width=600)
                         # Radial mask section moved here (after integration)
                         with gr.Accordion("Radial mask (optional, after integration)", open=False):
-                            rad_in = gr.Slider(0.0, 120.0, value=0.0, step=1.0, label="Radial inner % (0=中心)")
-                            rad_out = gr.Slider(0.0, 120.0, value=100.0, step=1.0, label="Radial outer % (100=境界)")
+                            rad_in = gr.Slider(0.0, 150.0, value=0.0, step=1.0, label="Radial inner % (0=中心)")
+                            rad_out = gr.Slider(0.0, 150.0, value=100.0, step=1.0, label="Radial outer % (100=境界)")
                             rad_min_obj = gr.Slider(0, 2000, value=50, step=10, label="Remove small objects (px)")
                         run_rad_btn = gr.Button("5. Build Radial mask")
                         # rad_overlay = gr.Image(type="pil", label="Radial mask overlay", width=600)
@@ -877,7 +903,7 @@ def build_ui():
                         tgt_img, ref_img, masks, tmask, rmask, tchan, rchan, pw, ph,
                         bool(bg_en), int(bg_r), bool(nm_en), nm_m,
                         bg_mode=str(bg_mode), bg_dark_pct=float(dark_pct),
-                        manual_tar_bg=mt, manual_ref_bg=mr, roi_mask=rad_bool,
+                        manual_tar_bg=mt, manual_ref_bg=mr, roi_mask=rad_bool, roi_labels=rad_lbl,
                     )
                     return ov, rad_bool, rad_lbl, tiff_bool, tiff_lbl, q_df, q_csv, q_tar_ov, q_ref_ov, q_tgt_on, q_ref_on, q_ratio
                 run_rad_btn.click(
@@ -1112,10 +1138,10 @@ def build_ui():
                         alert('Saved settings cleared. Restoring defaults.');
                         return [
                             'target', 'gray', 0, 0.4, 0.0, true,
-                            false, 'rolling', 50, 5.0, false, 'z-score',
+                            false, 'dark_subtract', 50, 5.0, false, 'min-max',
                             0.0, 100.0, 50,
-                            'gray', 'global_percentile', 254, 75.0, 50,
-                            'gray', 'global_percentile', 254, 75.0, 50,
+                            'gray', 'none', 254, 75.0, 50,
+                            'gray', 'none', 254, 75.0, 50,
                             1.0, 1.0,
                             {float(LABEL_SCALE)},
                         ];
