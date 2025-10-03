@@ -20,6 +20,10 @@ import tempfile
 from skimage import filters, morphology, measure, color, restoration
 import scipy.ndimage as ndi
 from cellpose import models
+import io
+import matplotlib
+matplotlib.use("Agg", force=True)
+import matplotlib.pyplot as plt
 
 # -----------------------
 # Display/label settings (adjustable via UI)
@@ -64,6 +68,35 @@ def get_model(use_gpu: bool = False) -> models.CellposeModel:
     if _MODEL is None:
         _MODEL = models.CellposeModel(gpu=use_gpu, pretrained_model="cpsam")
     return _MODEL
+
+
+# -----------------------
+# Numeric helpers
+# -----------------------
+
+def _moving_average_nan(y: np.ndarray, window_bins: int) -> np.ndarray:
+    """NaNを無視した移動平均。window_binsは1以上の奇数を推奨（偶数は繰上げて奇数化）。"""
+    if y is None:
+        return None
+    y = np.asarray(y, dtype=float)
+    n = y.size
+    if n == 0:
+        return y
+    w = int(max(1, window_bins))
+    if w % 2 == 0:
+        w += 1
+    if w == 1:
+        return y.copy()
+    half = w // 2
+    out = np.full(n, np.nan, dtype=float)
+    for i in range(n):
+        a = max(0, i - half)
+        b = min(n, i + half + 1)
+        win = y[a:b]
+        finite = np.isfinite(win)
+        if np.any(finite):
+            out[i] = float(np.mean(win[finite]))
+    return out
 
 
 # -----------------------
@@ -542,6 +575,575 @@ def radial_mask(
 
 
 # -----------------------
+# Extra: Radial intensity profile (banded 0-150% etc.)
+# -----------------------
+
+def radial_profile_analysis(
+    target_img: Image.Image,
+    reference_img: Image.Image,
+    masks: np.ndarray,
+    tgt_chan: int,
+    ref_chan: int,
+    start_pct: float,
+    end_pct: float,
+    step_pct: float,
+    pp_bg_enable: bool,
+    pp_bg_radius: int,
+    pp_norm_enable: bool,
+    pp_norm_method: str,
+    *,
+    bg_mode: str = "rolling",
+    bg_dark_pct: float = 5.0,
+    manual_tar_bg: float | None = None,
+    manual_ref_bg: float | None = None,
+    window_bins: int = 1,
+    show_errorbars: bool = True,
+):
+    if masks is None:
+        raise ValueError("Segmentation masks not provided. Run segmentation first.")
+    labels = np.unique(masks); labels = labels[labels > 0]
+    if labels.size == 0:
+        raise ValueError("No cells found in masks.")
+    # Preprocess images for measurement in native scale
+    tgt_nat = preprocess_for_processing(
+        target_img, use_native_scale=True,
+        bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+        norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+        manual_background=manual_tar_bg,
+    )
+    ref_nat = preprocess_for_processing(
+        reference_img, use_native_scale=True,
+        bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+        norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+        manual_background=manual_ref_bg,
+    )
+    tgt_gray = extract_single_channel(tgt_nat, tgt_chan)
+    ref_gray = extract_single_channel(ref_nat, ref_chan)
+
+    # Clamp band settings
+    s = float(start_pct); e = float(end_pct); st = float(step_pct)
+    if st <= 0:
+        st = 5.0
+    if e < s:
+        s, e = e, s
+    # Build bin edges in normalized units
+    # Include the end edge to close the last bin
+    edges_pct = np.arange(s, e + 1e-6, st, dtype=float)
+    if edges_pct[-1] < e:
+        edges_pct = np.append(edges_pct, e)
+    edges = edges_pct / 100.0
+    nbins = max(0, len(edges) - 1)
+    if nbins == 0:
+        raise ValueError("Invalid band settings: no bins formed")
+
+    # Precompute outside distance and nearest labels for extension >100%
+    fg = masks > 0
+    dist_bg, idx = ndi.distance_transform_edt(~fg, return_indices=True)
+    nearest_label = masks[idx[0], idx[1]]
+
+    # Accumulators per bin
+    sum_t = np.zeros(nbins, dtype=np.float64)
+    sum_r = np.zeros(nbins, dtype=np.float64)
+    cnt = np.zeros(nbins, dtype=np.int64)
+    # second moment for std
+    sum_t2 = np.zeros(nbins, dtype=np.float64)
+    sum_r2 = np.zeros(nbins, dtype=np.float64)
+
+    # Loop per cell, compute inside/outside normalized radii and accumulate
+    for lab in labels:
+        cell = (masks == lab)
+        if not np.any(cell):
+            continue
+        di = ndi.distance_transform_edt(cell)
+        dmax = float(di.max())
+        if dmax <= 0:
+            continue
+        # inside: t in [0,1]
+        tin = 1.0 - (di / dmax)
+        # outside assigned to this label
+        out_lab = (~fg) & (nearest_label == lab)
+        if np.any(out_lab):
+            tout = np.zeros_like(tin, dtype=np.float32)
+            tout[out_lab] = 1.0 + (dist_bg[out_lab].astype(np.float32) / dmax)
+        else:
+            tout = None
+
+        # Accumulate per bin
+        for k in range(nbins):
+            a = edges[k]; b = edges[k+1]
+            # include right edge in last bin
+            if k == nbins - 1:
+                idx_in = cell & (tin >= a) & (tin <= b)
+            else:
+                idx_in = cell & (tin >= a) & (tin < b)
+            if tout is not None:
+                if k == nbins - 1:
+                    idx_out = out_lab & (tout >= a) & (tout <= b)
+                else:
+                    idx_out = out_lab & (tout >= a) & (tout < b)
+            else:
+                idx_out = None
+            if idx_out is not None:
+                idx_band = idx_in | idx_out
+            else:
+                idx_band = idx_in
+            n = int(np.count_nonzero(idx_band))
+            if n == 0:
+                continue
+            cnt[k] += n
+            vals_t = tgt_gray[idx_band]
+            vals_r = ref_gray[idx_band]
+            sum_t[k] += float(np.sum(vals_t))
+            sum_r[k] += float(np.sum(vals_r))
+            sum_t2[k] += float(np.sum(vals_t.astype(np.float64) ** 2))
+            sum_r2[k] += float(np.sum(vals_r.astype(np.float64) ** 2))
+
+    # Build results
+    center_pct = (edges_pct[:-1] + edges_pct[1:]) / 2.0
+    mean_t = np.where(cnt > 0, sum_t / cnt, np.nan)
+    mean_r = np.where(cnt > 0, sum_r / cnt, np.nan)
+    # unbiased variance estimate; guard small n
+    var_t = np.where(cnt > 1, (sum_t2 - (sum_t ** 2) / cnt) / (cnt - 1), np.nan)
+    var_r = np.where(cnt > 1, (sum_r2 - (sum_r ** 2) / cnt) / (cnt - 1), np.nan)
+    std_t = np.sqrt(var_t)
+    std_r = np.sqrt(var_r)
+    sem_t = np.where(cnt > 0, std_t / np.sqrt(cnt), np.nan)
+    sem_r = np.where(cnt > 0, std_r / np.sqrt(cnt), np.nan)
+    # Ratio on pixels where reference > 0: approximate using means (optionally) or recompute per-pixel
+    # Here we use mean of per-pixel ratio by sampling mask again per bin for better fidelity
+    mean_ratio = np.full(nbins, np.nan, dtype=float)
+    std_ratio = np.full(nbins, np.nan, dtype=float)
+    cnt_ratio = np.zeros(nbins, dtype=np.int64)
+    for k in range(nbins):
+        a = edges[k]; b = edges[k+1]
+        acc = []
+        for lab in labels:
+            cell = (masks == lab)
+            if not np.any(cell):
+                continue
+            di = ndi.distance_transform_edt(cell)
+            dmax = float(di.max())
+            if dmax <= 0:
+                continue
+            tin = 1.0 - (di / dmax)
+            out_lab = (~fg) & (nearest_label == lab)
+            tout = None
+            if np.any(out_lab):
+                tout = np.zeros_like(tin, dtype=np.float32)
+                tout[out_lab] = 1.0 + (dist_bg[out_lab].astype(np.float32) / dmax)
+            if k == nbins - 1:
+                idx_in = cell & (tin >= a) & (tin <= b)
+            else:
+                idx_in = cell & (tin >= a) & (tin < b)
+            if tout is not None:
+                if k == nbins - 1:
+                    idx_out = out_lab & (tout >= a) & (tout <= b)
+                else:
+                    idx_out = out_lab & (tout >= a) & (tout < b)
+                idx_band = idx_in | idx_out
+            else:
+                idx_band = idx_in
+            if np.count_nonzero(idx_band) == 0:
+                continue
+            r = ref_gray[idx_band]
+            valid = r > 0
+            if np.count_nonzero(valid) == 0:
+                continue
+            acc.append(tgt_gray[idx_band][valid] / r[valid])
+        if len(acc) > 0:
+            allv = np.concatenate(acc)
+            if allv.size:
+                mean_ratio[k] = float(np.mean(allv))
+                std_ratio[k] = float(np.std(allv, ddof=1)) if allv.size > 1 else np.nan
+                cnt_ratio[k] = int(allv.size)
+
+    # Table
+    df = pd.DataFrame({
+        "band_start_pct": edges_pct[:-1],
+        "band_end_pct": edges_pct[1:],
+        "center_pct": center_pct,
+        "count_px": cnt,
+        "mean_target": mean_t,
+        "mean_reference": mean_r,
+        "std_target": std_t,
+        "std_reference": std_r,
+        "sem_target": sem_t,
+        "sem_reference": sem_r,
+        "mean_ratio_T_over_R": mean_ratio,
+        "std_ratio_T_over_R": std_ratio,
+        "sem_ratio_T_over_R": np.where(cnt_ratio > 0, std_ratio / np.sqrt(cnt_ratio), np.nan),
+        "count_ratio_px": cnt_ratio,
+    })
+    tmp_csv = tempfile.NamedTemporaryFile(delete=False, suffix="_radial_profile.csv")
+    df.to_csv(tmp_csv.name, index=False)
+
+    # Plot
+    fig, ax1 = plt.subplots(figsize=(6, 4))
+    ma_t = _moving_average_nan(mean_t, int(window_bins)) if window_bins and window_bins > 1 else mean_t
+    ma_r = _moving_average_nan(mean_r, int(window_bins)) if window_bins and window_bins > 1 else mean_r
+    # plot with optional error bars (SEM)
+    if show_errorbars:
+        ax1.errorbar(center_pct, ma_t, yerr=sem_t, fmt='-o', ms=3, capsize=2, label="Target", color="tab:red", alpha=0.9)
+        ax1.errorbar(center_pct, ma_r, yerr=sem_r, fmt='-o', ms=3, capsize=2, label="Reference", color="tab:blue", alpha=0.9)
+    else:
+        ax1.plot(center_pct, ma_t, label="Target", color="tab:red")
+        ax1.plot(center_pct, ma_r, label="Reference", color="tab:blue")
+    ax1.set_xlabel("Radial % (0=center, 100=boundary)")
+    ax1.set_ylabel("Mean intensity")
+    ax1.grid(True, alpha=0.3)
+    ax2 = ax1.twinx()
+    ma_ratio = _moving_average_nan(mean_ratio, int(window_bins)) if window_bins and window_bins > 1 else mean_ratio
+    if show_errorbars:
+        ax2.errorbar(center_pct, ma_ratio, yerr=np.where(cnt_ratio > 0, std_ratio / np.sqrt(cnt_ratio), np.nan), fmt='-s', ms=3, capsize=2, label="T/R", color="tab:green", alpha=0.9)
+    else:
+        ax2.plot(center_pct, ma_ratio, label="T/R", color="tab:green", linestyle="--")
+    ax2.set_ylabel("Mean ratio (T/R)")
+    # Build combined legend
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc="best")
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+    prof_plot = Image.open(buf).copy()
+    buf.close()
+    return df, tmp_csv.name, prof_plot
+
+
+def radial_profile_single(
+    target_img: Image.Image,
+    reference_img: Image.Image,
+    masks: np.ndarray,
+    label: int,
+    tgt_chan: int,
+    ref_chan: int,
+    start_pct: float,
+    end_pct: float,
+    step_pct: float,
+    pp_bg_enable: bool,
+    pp_bg_radius: int,
+    pp_norm_enable: bool,
+    pp_norm_method: str,
+    *,
+    bg_mode: str = "rolling",
+    bg_dark_pct: float = 5.0,
+    manual_tar_bg: float | None = None,
+    manual_ref_bg: float | None = None,
+    window_bins: int = 1,
+    show_errorbars: bool = True,
+):
+    # Preprocess once
+    tgt_nat = preprocess_for_processing(
+        target_img, use_native_scale=True,
+        bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+        norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+        manual_background=manual_tar_bg,
+    )
+    ref_nat = preprocess_for_processing(
+        reference_img, use_native_scale=True,
+        bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+        norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+        manual_background=manual_ref_bg,
+    )
+    tgt_gray = extract_single_channel(tgt_nat, tgt_chan)
+    ref_gray = extract_single_channel(ref_nat, ref_chan)
+    labels_all = np.unique(masks); labels_all = labels_all[labels_all > 0]
+    if int(label) not in set(map(int, labels_all.tolist())):
+        raise ValueError(f"Label {label} not found in masks")
+    lab = int(label)
+    cell = (masks == lab)
+    if not np.any(cell):
+        raise ValueError(f"Label {lab} has no pixels")
+    di = ndi.distance_transform_edt(cell)
+    dmax = float(di.max())
+    if dmax <= 0:
+        raise ValueError("Invalid cell (zero max distance)")
+    tin = 1.0 - (di / dmax)
+    # outside ring assigned to this label
+    fg = masks > 0
+    dist_bg, idx = ndi.distance_transform_edt(~fg, return_indices=True)
+    nearest_label = masks[idx[0], idx[1]]
+    out_lab = (~fg) & (nearest_label == lab)
+    tout = None
+    if np.any(out_lab):
+        tout = np.zeros_like(tin, dtype=np.float32)
+        tout[out_lab] = 1.0 + (dist_bg[out_lab].astype(np.float32) / dmax)
+
+    # Bins
+    s = float(start_pct); e = float(end_pct); st = float(step_pct)
+    if st <= 0: st = 5.0
+    if e < s: s, e = e, s
+    edges_pct = np.arange(s, e + 1e-6, st, dtype=float)
+    if edges_pct[-1] < e:
+        edges_pct = np.append(edges_pct, e)
+    edges = edges_pct / 100.0
+    nbins = max(0, len(edges) - 1)
+    if nbins == 0:
+        raise ValueError("Invalid band settings: no bins formed")
+
+    rows = []
+    for k in range(nbins):
+        a = edges[k]; b = edges[k+1]
+        if k == nbins - 1:
+            idx_in = cell & (tin >= a) & (tin <= b)
+        else:
+            idx_in = cell & (tin >= a) & (tin < b)
+        if tout is not None:
+            if k == nbins - 1:
+                idx_out = out_lab & (tout >= a) & (tout <= b)
+            else:
+                idx_out = out_lab & (tout >= a) & (tout < b)
+            idx_band = idx_in | idx_out
+        else:
+            idx_band = idx_in
+        n = int(np.count_nonzero(idx_band))
+        if n == 0:
+            rows.append({
+                "label": lab,
+                "band_start_pct": edges_pct[k],
+                "band_end_pct": edges_pct[k+1],
+                "center_pct": (edges_pct[k] + edges_pct[k+1]) / 2.0,
+                "count_px": 0,
+                "mean_target": np.nan,
+                "mean_reference": np.nan,
+                "std_target": np.nan,
+                "std_reference": np.nan,
+                "sem_target": np.nan,
+                "sem_reference": np.nan,
+                "mean_ratio_T_over_R": np.nan,
+                "std_ratio_T_over_R": np.nan,
+                "sem_ratio_T_over_R": np.nan,
+                "count_ratio_px": 0,
+            })
+            continue
+        vals_t = tgt_gray[idx_band].astype(np.float64)
+        vals_r = ref_gray[idx_band].astype(np.float64)
+        mean_t = float(np.mean(vals_t))
+        mean_r = float(np.mean(vals_r))
+        std_t = float(np.std(vals_t, ddof=1)) if n > 1 else np.nan
+        std_r = float(np.std(vals_r, ddof=1)) if n > 1 else np.nan
+        sem_t = float(std_t / np.sqrt(n)) if n > 1 else np.nan
+        sem_r = float(std_r / np.sqrt(n)) if n > 1 else np.nan
+        r = ref_gray[idx_band]
+        valid = r > 0
+        if np.count_nonzero(valid) > 0:
+            rr = (tgt_gray[idx_band][valid] / r[valid]).astype(np.float64)
+            ratio_mean = float(np.mean(rr))
+            ratio_std = float(np.std(rr, ddof=1)) if rr.size > 1 else np.nan
+            ratio_sem = float(ratio_std / np.sqrt(rr.size)) if rr.size > 1 else (0.0 if rr.size == 1 else np.nan)
+            ratio_cnt = int(rr.size)
+        else:
+            ratio_mean = np.nan
+            ratio_std = np.nan
+            ratio_sem = np.nan
+            ratio_cnt = 0
+        rows.append({
+            "label": lab,
+            "band_start_pct": edges_pct[k],
+            "band_end_pct": edges_pct[k+1],
+            "center_pct": (edges_pct[k] + edges_pct[k+1]) / 2.0,
+            "count_px": n,
+            "mean_target": mean_t,
+            "mean_reference": mean_r,
+            "std_target": std_t,
+            "std_reference": std_r,
+            "sem_target": sem_t,
+            "sem_reference": sem_r,
+            "mean_ratio_T_over_R": ratio_mean,
+            "std_ratio_T_over_R": ratio_std,
+            "sem_ratio_T_over_R": ratio_sem,
+            "count_ratio_px": ratio_cnt,
+        })
+
+    df = pd.DataFrame(rows)
+    tmp_csv = tempfile.NamedTemporaryFile(delete=False, suffix=f"_radial_profile_label_{lab}.csv")
+    df.to_csv(tmp_csv.name, index=False)
+
+    # Plot
+    fig, ax1 = plt.subplots(figsize=(6, 4))
+    ma_t = _moving_average_nan(df["mean_target"].to_numpy(dtype=float), int(window_bins)) if window_bins and window_bins > 1 else df["mean_target"].to_numpy(dtype=float)
+    ma_r = _moving_average_nan(df["mean_reference"].to_numpy(dtype=float), int(window_bins)) if window_bins and window_bins > 1 else df["mean_reference"].to_numpy(dtype=float)
+    x = df["center_pct"].to_numpy(dtype=float)
+    if show_errorbars:
+        ax1.errorbar(x, ma_t, yerr=df["sem_target"].to_numpy(dtype=float), fmt='-o', ms=3, capsize=2, label=f"Target (L{lab})", color="tab:red", alpha=0.9)
+        ax1.errorbar(x, ma_r, yerr=df["sem_reference"].to_numpy(dtype=float), fmt='-o', ms=3, capsize=2, label=f"Reference (L{lab})", color="tab:blue", alpha=0.9)
+    else:
+        ax1.plot(x, ma_t, label=f"Target (L{lab})", color="tab:red")
+        ax1.plot(x, ma_r, label=f"Reference (L{lab})", color="tab:blue")
+    ax1.set_xlabel("Radial % (0=center, 100=boundary)")
+    ax1.set_ylabel("Mean intensity")
+    ax1.grid(True, alpha=0.3)
+    ax2 = ax1.twinx()
+    ma_ratio = _moving_average_nan(df["mean_ratio_T_over_R"].to_numpy(dtype=float), int(window_bins)) if window_bins and window_bins > 1 else df["mean_ratio_T_over_R"].to_numpy(dtype=float)
+    if show_errorbars and "sem_ratio_T_over_R" in df.columns:
+        ax2.errorbar(x, ma_ratio, yerr=df["sem_ratio_T_over_R"].to_numpy(dtype=float), fmt='-s', ms=3, capsize=2, label="T/R", color="tab:green", alpha=0.9)
+    else:
+        ax2.plot(x, ma_ratio, label="T/R", color="tab:green", linestyle="--")
+    ax2.set_ylabel("Mean ratio (T/R)")
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc="best")
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+    plot_img = Image.open(buf).copy()
+    buf.close()
+    return df, tmp_csv.name, plot_img
+
+
+def radial_profile_all_cells(
+    target_img: Image.Image,
+    reference_img: Image.Image,
+    masks: np.ndarray,
+    tgt_chan: int,
+    ref_chan: int,
+    start_pct: float,
+    end_pct: float,
+    step_pct: float,
+    pp_bg_enable: bool,
+    pp_bg_radius: int,
+    pp_norm_enable: bool,
+    pp_norm_method: str,
+    *,
+    bg_mode: str = "rolling",
+    bg_dark_pct: float = 5.0,
+    manual_tar_bg: float | None = None,
+    manual_ref_bg: float | None = None,
+):
+    # Preprocess once
+    tgt_nat = preprocess_for_processing(
+        target_img, use_native_scale=True,
+        bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+        norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+        manual_background=manual_tar_bg,
+    )
+    ref_nat = preprocess_for_processing(
+        reference_img, use_native_scale=True,
+        bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+        norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+        manual_background=manual_ref_bg,
+    )
+    tgt_gray = extract_single_channel(tgt_nat, tgt_chan)
+    ref_gray = extract_single_channel(ref_nat, ref_chan)
+    labels = np.unique(masks); labels = labels[labels > 0]
+    if labels.size == 0:
+        raise ValueError("No cells found in masks.")
+    # For outside assignment
+    fg = masks > 0
+    dist_bg, idx = ndi.distance_transform_edt(~fg, return_indices=True)
+    nearest_label = masks[idx[0], idx[1]]
+
+    # Bins
+    s = float(start_pct); e = float(end_pct); st = float(step_pct)
+    if st <= 0: st = 5.0
+    if e < s: s, e = e, s
+    edges_pct = np.arange(s, e + 1e-6, st, dtype=float)
+    if edges_pct[-1] < e:
+        edges_pct = np.append(edges_pct, e)
+    edges = edges_pct / 100.0
+    nbins = max(0, len(edges) - 1)
+    if nbins == 0:
+        raise ValueError("Invalid band settings: no bins formed")
+
+    rows = []
+    for lab in labels:
+        cell = (masks == lab)
+        if not np.any(cell):
+            continue
+        di = ndi.distance_transform_edt(cell)
+        dmax = float(di.max())
+        if dmax <= 0:
+            continue
+        tin = 1.0 - (di / dmax)
+        out_lab = (~fg) & (nearest_label == lab)
+        tout = None
+        if np.any(out_lab):
+            tout = np.zeros_like(tin, dtype=np.float32)
+            tout[out_lab] = 1.0 + (dist_bg[out_lab].astype(np.float32) / dmax)
+        for k in range(nbins):
+            a = edges[k]; b = edges[k+1]
+            if k == nbins - 1:
+                idx_in = cell & (tin >= a) & (tin <= b)
+            else:
+                idx_in = cell & (tin >= a) & (tin < b)
+            if tout is not None:
+                if k == nbins - 1:
+                    idx_out = out_lab & (tout >= a) & (tout <= b)
+                else:
+                    idx_out = out_lab & (tout >= a) & (tout < b)
+                idx_band = idx_in | idx_out
+            else:
+                idx_band = idx_in
+            n = int(np.count_nonzero(idx_band))
+            if n == 0:
+                rows.append({
+                    "label": int(lab),
+                    "band_start_pct": edges_pct[k],
+                    "band_end_pct": edges_pct[k+1],
+                    "center_pct": (edges_pct[k] + edges_pct[k+1]) / 2.0,
+                    "count_px": 0,
+                    "mean_target": np.nan,
+                    "mean_reference": np.nan,
+                    "std_target": np.nan,
+                    "std_reference": np.nan,
+                    "sem_target": np.nan,
+                    "sem_reference": np.nan,
+                    "mean_ratio_T_over_R": np.nan,
+                    "std_ratio_T_over_R": np.nan,
+                    "sem_ratio_T_over_R": np.nan,
+                    "count_ratio_px": 0,
+                })
+                continue
+            vals_t = tgt_gray[idx_band].astype(np.float64)
+            vals_r = ref_gray[idx_band].astype(np.float64)
+            mean_t = float(np.mean(vals_t))
+            mean_r = float(np.mean(vals_r))
+            std_t = float(np.std(vals_t, ddof=1)) if n > 1 else np.nan
+            std_r = float(np.std(vals_r, ddof=1)) if n > 1 else np.nan
+            sem_t = float(std_t / np.sqrt(n)) if n > 1 else np.nan
+            sem_r = float(std_r / np.sqrt(n)) if n > 1 else np.nan
+            r = ref_gray[idx_band]
+            valid = r > 0
+            if np.count_nonzero(valid) > 0:
+                rr = (tgt_gray[idx_band][valid] / r[valid]).astype(np.float64)
+                ratio_mean = float(np.mean(rr))
+                ratio_std = float(np.std(rr, ddof=1)) if rr.size > 1 else np.nan
+                ratio_sem = float(ratio_std / np.sqrt(rr.size)) if rr.size > 1 else np.nan
+                ratio_cnt = int(rr.size)
+            else:
+                ratio_mean = np.nan
+                ratio_std = np.nan
+                ratio_sem = np.nan
+                ratio_cnt = 0
+            rows.append({
+                "label": int(lab),
+                "band_start_pct": edges_pct[k],
+                "band_end_pct": edges_pct[k+1],
+                "center_pct": (edges_pct[k] + edges_pct[k+1]) / 2.0,
+                "count_px": n,
+                "mean_target": mean_t,
+                "mean_reference": mean_r,
+                "std_target": std_t,
+                "std_reference": std_r,
+                "sem_target": sem_t,
+                "sem_reference": sem_r,
+                "mean_ratio_T_over_R": ratio_mean,
+                "std_ratio_T_over_R": ratio_std,
+                "sem_ratio_T_over_R": ratio_sem,
+                "count_ratio_px": ratio_cnt,
+            })
+
+    df = pd.DataFrame(rows).sort_values(["label", "center_pct"]) if rows else pd.DataFrame()
+    tmp_csv = tempfile.NamedTemporaryFile(delete=False, suffix="_radial_profile_all_cells.csv")
+    df.to_csv(tmp_csv.name, index=False)
+    return df, tmp_csv.name
+
+
+# -----------------------
 # Step 3/4: Apply mask for target or reference (raw)
 # -----------------------
 
@@ -793,7 +1395,7 @@ def build_ui():
                         with gr.Accordion("Settings", open=False):
                             reset_settings = gr.Button("Reset Settings",scale=1)
                             label_scale = gr.Slider(0.0, 5.0, value=float(LABEL_SCALE), step=0.1, label="Label size scale (0=hidden)")
-                        with gr.Accordion("Segmentation params", open=False):
+                        with gr.Accordion("Segmentation params", open=True):
                             seg_source = gr.Radio(["target","reference"], value="target", label="Segment on")
                             seg_chan = gr.Radio(["gray","R","G","B"], value="gray", label="Segmentation channel")
                             diameter = gr.Slider(0, 200, value=0, step=1, label="Diameter (px, 0=auto)")
@@ -806,7 +1408,7 @@ def build_ui():
                             mask_img = gr.Image(type="pil", label="Segmentation label image", width=600)
                         seg_tiff_file = gr.File(label="Download masks (label TIFF)")
                         # Radial mask controls are moved to the bottom (after Integrate)
-                        with gr.Accordion("Apply mask", open=False):
+                        with gr.Accordion("Apply mask", open=True):
                             with gr.Row():
                                 with gr.Column():
                                     gr.Markdown("**Target mask settings**")
@@ -831,7 +1433,7 @@ def build_ui():
                             with gr.Column():
                                 ref_overlay = gr.Image(type="pil", label="Reference mask overlay", width=600)
                                 ref_tiff = gr.File(label="Download reference mask (TIFF)")
-                        with gr.Accordion("Integrate & Quantify", open=False):
+                        with gr.Accordion("Integrate & Quantify", open=True):
                             with gr.Column():
                                 pp_bg_enable = gr.Checkbox(value=False, label="Background correction")
                                 pp_bg_mode = gr.Dropdown(["rolling","dark_subtract","manual"], value="dark_subtract", label="BG method")
@@ -866,11 +1468,11 @@ def build_ui():
                             ref_on_and_img = gr.Image(type="pil", label="Reference on AND mask", width=600)
                             ratio_img = gr.Image(type="pil", label="Ratio (Target/Reference) on AND mask", width=600)
                         # Radial mask section moved here (after integration)
-                        with gr.Accordion("Radial mask (optional, after integration)", open=False):
+                        with gr.Accordion("Radial mask (optional, after integration)", open=True):
                             rad_in = gr.Slider(0.0, 150.0, value=0.0, step=1.0, label="Radial inner % (0=中心)")
                             rad_out = gr.Slider(0.0, 150.0, value=100.0, step=1.0, label="Radial outer % (100=境界)")
                             rad_min_obj = gr.Slider(0, 2000, value=50, step=10, label="Remove small objects (px)")
-                        run_rad_btn = gr.Button("5. Build Radial mask")
+                        run_rad_btn = gr.Button("5. Build Radial mask & Quantify")
                         # rad_overlay = gr.Image(type="pil", label="Radial mask overlay", width=600)
                         rad_overlay=gr.State()
                         with gr.Row():
@@ -886,15 +1488,47 @@ def build_ui():
                             radial_tgt_on_and_img = gr.Image(type="pil", label="Target on Radial AND mask", width=600)
                             radial_ref_on_and_img = gr.Image(type="pil", label="Reference on Radial AND mask", width=600)
                             radial_ratio_img = gr.Image(type="pil", label="Ratio (Target/Reference) on Radial AND mask", width=600)
+                        # Radial profile (banded) section
+                        with gr.Accordion("Radial intensity profile", open=True):
+                            prof_start = gr.Number(value=0.0, label="Start %", scale=1)
+                            prof_end = gr.Number(value=150.0, label="End %", scale=1)
+                            prof_step = gr.Number(value=5.0, label="Step %", scale=1)
+                            prof_window = gr.Number(value=1, label="Smoothing window (bins)", scale=1)
+                            
+                        # Cache states for radial profile results (computed by 6.)
+                        prof_cache_df_state = gr.State()
+                        prof_cache_csv_state = gr.State()
+                        prof_cache_plot_state = gr.State()
+                        prof_cache_params_state = gr.State()
+                        run_prof_btn = gr.Button("6. Compute Radial profile")
+                        profile_table = gr.Dataframe(label="Radial profile (all cells)", interactive=False, pinned_columns=1)
+                        profile_csv = gr.File(label="Download radial profile CSV")
+                        # Single-cell / All selector
+                        with gr.Row():
+                            with gr.Column():
+                                prof_label = gr.Dropdown(choices=["All"], value="All", label="Label for single-cell profile", allow_custom_value=False)
+                                prof_show_err = gr.Checkbox(value=True, label="Show error bars (SEM)")
+                            run_prof_single_btn = gr.Button("Changed label, update profile",)
+                        
+                        profile_plot = gr.Image(type="pil", label="Radial profile plot", width=800)
                         
 
                 # Segmentation
                 def _run_seg(tgt_img, ref_img, seg_source, seg_chan, diameter, flow_th, cellprob_th, use_gpu):
-                    return run_segmentation(tgt_img, ref_img, seg_source, seg_chan, diameter, flow_th, cellprob_th, use_gpu)
+                    ov, seg_tif, mask_viz, masks = run_segmentation(tgt_img, ref_img, seg_source, seg_chan, diameter, flow_th, cellprob_th, use_gpu)
+                    # Build dropdown choices for labels
+                    try:
+                        labs = np.unique(masks)
+                        labs = labs[labs > 0]
+                        choices = ["All"] + [str(int(l)) for l in labs]
+                    except Exception:
+                        choices = ["All"]
+                    # Reset radial-profile caches upon new segmentation
+                    return ov, seg_tif, mask_viz, masks, gr.update(choices=choices, value="All"), None, None, None, None
                 run_seg_btn.click(
                     fn=_run_seg,
                     inputs=[tgt, ref, seg_source, seg_chan, diameter, flow_th, cellprob_th, use_gpu],
-                    outputs=[seg_overlay, seg_tiff_file, mask_img, masks_state],
+                    outputs=[seg_overlay, seg_tiff_file, mask_img, masks_state, prof_label, prof_cache_df_state, prof_cache_csv_state, prof_cache_plot_state, prof_cache_params_state],
                 )
                 # Radial mask (now at bottom)
                 def _radial_and_quantify(tgt_img, ref_img, masks, rin, rout, mino, tmask, rmask, tchan, rchan, pw, ph, bg_en, bg_mode, bg_r, dark_pct, nm_en, nm_m, man_t, man_r):
@@ -914,6 +1548,272 @@ def build_ui():
                     fn=_radial_and_quantify,
                     inputs=[tgt, ref, masks_state, rad_in, rad_out, rad_min_obj, tgt_mask_state, ref_mask_state, tgt_chan, ref_chan, px_w, px_h, pp_bg_enable, pp_bg_mode, pp_bg_radius, pp_dark_pct, pp_norm_enable, pp_norm_method, bak_tar, bak_ref],
                     outputs=[rad_overlay, radial_mask_state, radial_label_state, rad_tiff, rad_lbl_tiff, radial_table, radial_csv, radial_tar_overlay, radial_ref_overlay, radial_tgt_on_and_img, radial_ref_on_and_img, radial_ratio_img],
+                )
+                # Radial profile callback
+                def _radial_profile_cb(tgt_img, ref_img, masks, tchan, rchan, s, e, st, win, show_err, bg_en, bg_mode, bg_r, dark_pct, nm_en, nm_m, man_t, man_r):
+                    # manual backgrounds only if explicitly manual mode
+                    bgm = str(bg_mode)
+                    mt = float(man_t) if (bg_en and bgm == "manual") else None
+                    mr = float(man_r) if (bg_en and bgm == "manual") else None
+                    # All-cells table + CSV
+                    df_all, csv_all = radial_profile_all_cells(
+                        tgt_img, ref_img, masks, tchan, rchan,
+                        float(s), float(e), float(st),
+                        bool(bg_en), int(bg_r), bool(nm_en), nm_m,
+                        bg_mode=str(bg_mode), bg_dark_pct=float(dark_pct),
+                        manual_tar_bg=mt, manual_ref_bg=mr,
+                    )
+                    # Mean plot
+                    _, _, plot_img = radial_profile_analysis(
+                        tgt_img, ref_img, masks, tchan, rchan,
+                        float(s), float(e), float(st),
+                        bool(bg_en), int(bg_r), bool(nm_en), nm_m,
+                        bg_mode=str(bg_mode), bg_dark_pct=float(dark_pct),
+                        manual_tar_bg=mt, manual_ref_bg=mr,
+                        window_bins=int(win), show_errorbars=bool(show_err),
+                    )
+                    # Build cache params signature
+                    try:
+                        labs = np.unique(masks)
+                        labs = labs[labs > 0]
+                        lab_count = int(labs.size)
+                        lab_max = int(labs.max()) if lab_count > 0 else 0
+                        mshape = tuple(masks.shape)
+                    except Exception:
+                        lab_count = 0; lab_max = 0; mshape = None
+                    params = dict(
+                        tchan=str(tchan), rchan=str(rchan), start=float(s), end=float(e), step=float(st),
+                        bg_enable=bool(bg_en), bg_mode=str(bg_mode), bg_radius=int(bg_r), dark_pct=float(dark_pct),
+                        norm_enable=bool(nm_en), norm_method=str(nm_m),
+                        man_t=float(mt) if mt is not None else None, man_r=float(mr) if mr is not None else None,
+                        mask_shape=mshape, lab_count=lab_count, lab_max=lab_max,
+                    )
+                    return df_all, csv_all, plot_img, df_all, csv_all, plot_img, params
+                run_prof_btn.click(
+                    fn=_radial_profile_cb,
+                    inputs=[tgt, ref, masks_state, tgt_chan, ref_chan, prof_start, prof_end, prof_step, prof_window, prof_show_err, pp_bg_enable, pp_bg_mode, pp_bg_radius, pp_dark_pct, pp_norm_enable, pp_norm_method, bak_tar, bak_ref],
+                    outputs=[profile_table, profile_csv, profile_plot, prof_cache_df_state, prof_cache_csv_state, prof_cache_plot_state, prof_cache_params_state],
+                )
+                def _radial_profile_single_or_all_cb(tgt_img, ref_img, masks, label_val, tchan, rchan, s, e, st, win, show_err, bg_en, bg_mode, bg_r, dark_pct, nm_en, nm_m, man_t, man_r, cache_df, cache_csv, cache_plot, cache_params):
+                    bgm = str(bg_mode)
+                    mt = float(man_t) if (bg_en and bgm == "manual") else None
+                    mr = float(man_r) if (bg_en and bgm == "manual") else None
+                    # Build current params signature for cache matching
+                    try:
+                        labs_now = np.unique(masks)
+                        labs_now = labs_now[labs_now > 0]
+                        lab_count = int(labs_now.size)
+                        lab_max = int(labs_now.max()) if lab_count > 0 else 0
+                        mshape = tuple(masks.shape)
+                    except Exception:
+                        lab_count = 0; lab_max = 0; mshape = None
+                    cur_params = dict(
+                        tchan=str(tchan), rchan=str(rchan), start=float(s), end=float(e), step=float(st),
+                        bg_enable=bool(bg_en), bg_mode=str(bg_mode), bg_radius=int(bg_r), dark_pct=float(dark_pct),
+                        norm_enable=bool(nm_en), norm_method=str(nm_m),
+                        man_t=float(mt) if mt is not None else None, man_r=float(mr) if mr is not None else None,
+                        mask_shape=mshape, lab_count=lab_count, lab_max=lab_max,
+                    )
+                    def params_equal(a, b):
+                        try:
+                            return a == b
+                        except Exception:
+                            return False
+                    if str(label_val) == "All":
+                        # Helper to rebuild All-cells mean plot from cached all-cells DF (no recompute)
+                        def _build_all_plot_from_df(df_all_in: pd.DataFrame, window_bins_int: int, show_err_bool: bool):
+                            # Group by bin using center_pct; compute pooled stats weighted by pixel counts
+                            bins = np.sort(df_all_in["center_pct"].dropna().unique())
+                            M_t = []; SEM_t = []; M_r = []; SEM_r = []; M_ratio = []; SEM_ratio = []
+                            for c in bins:
+                                g = df_all_in[df_all_in["center_pct"] == c]
+                                # Target pooled
+                                gi = g.dropna(subset=["mean_target", "std_target", "count_px"]) if not g.empty else g
+                                n = gi["count_px"].to_numpy(dtype=float)
+                                m = gi["mean_target"].to_numpy(dtype=float)
+                                s = gi["std_target"].to_numpy(dtype=float)
+                                N = float(np.nansum(n)) if gi is not None else 0.0
+                                if N > 0:
+                                    M = float(np.nansum(n * m) / N)
+                                    if N > 1 and gi.shape[0] > 0:
+                                        SS_within = np.nansum((n - 1) * (s ** 2))
+                                        SS_between = np.nansum(n * ((m - M) ** 2))
+                                        var = (SS_within + SS_between) / (N - 1)
+                                        sem = np.sqrt(var) / np.sqrt(N)
+                                    else:
+                                        sem = np.nan
+                                else:
+                                    M = np.nan; sem = np.nan
+                                M_t.append(M); SEM_t.append(sem)
+                                # Reference pooled
+                                gi = g.dropna(subset=["mean_reference", "std_reference", "count_px"]) if not g.empty else g
+                                n = gi["count_px"].to_numpy(dtype=float)
+                                m = gi["mean_reference"].to_numpy(dtype=float)
+                                s = gi["std_reference"].to_numpy(dtype=float)
+                                N = float(np.nansum(n)) if gi is not None else 0.0
+                                if N > 0:
+                                    M = float(np.nansum(n * m) / N)
+                                    if N > 1 and gi.shape[0] > 0:
+                                        SS_within = np.nansum((n - 1) * (s ** 2))
+                                        SS_between = np.nansum(n * ((m - M) ** 2))
+                                        var = (SS_within + SS_between) / (N - 1)
+                                        sem = np.sqrt(var) / np.sqrt(N)
+                                    else:
+                                        sem = np.nan
+                                else:
+                                    M = np.nan; sem = np.nan
+                                M_r.append(M); SEM_r.append(sem)
+                                # Ratio pooled based on per-pixel valid counts
+                                if "count_ratio_px" in g.columns:
+                                    gi = g.dropna(subset=["mean_ratio_T_over_R"]) if not g.empty else g
+                                    nr = gi.get("count_ratio_px", pd.Series(np.zeros(len(gi)), index=gi.index)).to_numpy(dtype=float)
+                                    mr = gi["mean_ratio_T_over_R"].to_numpy(dtype=float)
+                                    sr = gi.get("std_ratio_T_over_R", pd.Series(np.nan, index=gi.index)).to_numpy(dtype=float)
+                                    NR = float(np.nansum(nr)) if gi is not None else 0.0
+                                    if NR > 0:
+                                        MR = float(np.nansum(nr * mr) / NR)
+                                        if NR > 1 and gi.shape[0] > 0:
+                                            SS_within_r = np.nansum((nr - 1) * (sr ** 2))
+                                            SS_between_r = np.nansum(nr * ((mr - MR) ** 2))
+                                            var_r = (SS_within_r + SS_between_r) / (NR - 1)
+                                            sem_r = np.sqrt(var_r) / np.sqrt(NR)
+                                        else:
+                                            sem_r = np.nan
+                                    else:
+                                        MR = np.nan; sem_r = np.nan
+                                else:
+                                    MR = np.nan; sem_r = np.nan
+                                M_ratio.append(MR); SEM_ratio.append(sem_r)
+                            x = bins
+                            ma_t = _moving_average_nan(np.array(M_t, dtype=float), int(win)) if win and int(win) > 1 else np.array(M_t, dtype=float)
+                            ma_r = _moving_average_nan(np.array(M_r, dtype=float), int(win)) if win and int(win) > 1 else np.array(M_r, dtype=float)
+                            ma_ratio = _moving_average_nan(np.array(M_ratio, dtype=float), int(win)) if win and int(win) > 1 else np.array(M_ratio, dtype=float)
+                            fig, ax1 = plt.subplots(figsize=(6, 4))
+                            if show_err_bool:
+                                ax1.errorbar(x, ma_t, yerr=np.array(SEM_t, dtype=float), fmt='-o', ms=3, capsize=2, label="Target", color="tab:red", alpha=0.9)
+                                ax1.errorbar(x, ma_r, yerr=np.array(SEM_r, dtype=float), fmt='-o', ms=3, capsize=2, label="Reference", color="tab:blue", alpha=0.9)
+                            else:
+                                ax1.plot(x, ma_t, label="Target", color="tab:red")
+                                ax1.plot(x, ma_r, label="Reference", color="tab:blue")
+                            ax1.set_xlabel("Radial % (0=center, 100=boundary)")
+                            ax1.set_ylabel("Mean intensity")
+                            ax1.grid(True, alpha=0.3)
+                            ax2 = ax1.twinx()
+                            if show_err_bool:
+                                ax2.errorbar(x, ma_ratio, yerr=np.array(SEM_ratio, dtype=float), fmt='-s', ms=3, capsize=2, label="T/R", color="tab:green", alpha=0.9)
+                            else:
+                                ax2.plot(x, ma_ratio, label="T/R", color="tab:green", linestyle="--")
+                            ax2.set_ylabel("Mean ratio (T/R)")
+                            lines1, labels1 = ax1.get_legend_handles_labels()
+                            lines2, labels2 = ax2.get_legend_handles_labels()
+                            ax1.legend(lines1 + lines2, labels1 + labels2, loc="best")
+                            buf = io.BytesIO()
+                            fig.tight_layout()
+                            fig.savefig(buf, format="png", dpi=150)
+                            plt.close(fig)
+                            buf.seek(0)
+                            out_img = Image.open(buf).copy()
+                            buf.close()
+                            return out_img
+
+                        # If cache matches, rebuild plot from cached DF (no recompute)
+                        if (cache_df is not None) and params_equal(cache_params, cur_params):
+                            plot_img = _build_all_plot_from_df(cache_df, int(win), bool(show_err))
+                            return cache_df, cache_csv, plot_img, cache_df, cache_csv, plot_img, cache_params
+                        # Else recompute all-cells DF, then plot from DF only
+                        df_all, csv_all = radial_profile_all_cells(
+                            tgt_img, ref_img, masks, tchan, rchan,
+                            float(s), float(e), float(st),
+                            bool(bg_en), int(bg_r), bool(nm_en), nm_m,
+                            bg_mode=str(bg_mode), bg_dark_pct=float(dark_pct),
+                            manual_tar_bg=mt, manual_ref_bg=mr,
+                        )
+                        plot_img = _build_all_plot_from_df(df_all, int(win), bool(show_err))
+                        return df_all, csv_all, plot_img, df_all, csv_all, plot_img, cur_params
+                    else:
+                        try:
+                            lab = int(str(label_val))
+                        except Exception:
+                            lab = None
+                        if lab is None:
+                            return gr.update(), None, None, cache_df, cache_csv, cache_plot, cache_params
+                        # Prefer cached all-cells DF for slicing if available and params match
+                        use_df = None
+                        if (cache_df is not None) and params_equal(cache_params, cur_params):
+                            use_df = cache_df
+                        else:
+                            # Recompute all-cells to fill cache (so subsequent switches are instant)
+                            use_df, csv_all = radial_profile_all_cells(
+                                tgt_img, ref_img, masks, tchan, rchan,
+                                float(s), float(e), float(st),
+                                bool(bg_en), int(bg_r), bool(nm_en), nm_m,
+                                bg_mode=str(bg_mode), bg_dark_pct=float(dark_pct),
+                                manual_tar_bg=mt, manual_ref_bg=mr,
+                            )
+                            # Also compute All mean plot for completeness of cache
+                            _, _, cache_plot_new = radial_profile_analysis(
+                                tgt_img, ref_img, masks, tchan, rchan,
+                                float(s), float(e), float(st),
+                                bool(bg_en), int(bg_r), bool(nm_en), nm_m,
+                                bg_mode=str(bg_mode), bg_dark_pct=float(dark_pct),
+                                manual_tar_bg=mt, manual_ref_bg=mr,
+                                window_bins=int(win), show_errorbars=bool(show_err),
+                            )
+                            cache_df = use_df; cache_csv = csv_all; cache_plot = cache_plot_new; cache_params = cur_params
+                        # Slice single label rows
+                        try:
+                            df1 = use_df[use_df["label"] == int(lab)].copy()
+                        except Exception:
+                            # Fallback to direct compute for the label
+                            df1, csv1, plot1 = radial_profile_single(
+                                tgt_img, ref_img, masks, lab, tchan, rchan,
+                                float(s), float(e), float(st),
+                                bool(bg_en), int(bg_r), bool(nm_en), nm_m,
+                                bg_mode=str(bg_mode), bg_dark_pct=float(dark_pct),
+                                manual_tar_bg=mt, manual_ref_bg=mr,
+                                window_bins=int(win), show_errorbars=bool(show_err),
+                            )
+                            return df1, csv1, plot1, cache_df, cache_csv, cache_plot, cache_params
+                        # Write CSV for this label
+                        tmp_csv = tempfile.NamedTemporaryFile(delete=False, suffix=f"_radial_profile_label_{lab}.csv")
+                        df1.to_csv(tmp_csv.name, index=False)
+                        # Plot for this label based on df slice
+                        fig, ax1 = plt.subplots(figsize=(6, 4))
+                        x = df1["center_pct"].to_numpy(dtype=float)
+                        ma_t = _moving_average_nan(df1["mean_target"].to_numpy(dtype=float), int(win)) if win and int(win) > 1 else df1["mean_target"].to_numpy(dtype=float)
+                        ma_r = _moving_average_nan(df1["mean_reference"].to_numpy(dtype=float), int(win)) if win and int(win) > 1 else df1["mean_reference"].to_numpy(dtype=float)
+                        if bool(show_err):
+                            ax1.errorbar(x, ma_t, yerr=df1.get("sem_target", df1.get("std_target", pd.Series(np.nan, index=df1.index))).to_numpy(dtype=float), fmt='-o', ms=3, capsize=2, label=f"Target (L{lab})", color="tab:red", alpha=0.9)
+                            ax1.errorbar(x, ma_r, yerr=df1.get("sem_reference", df1.get("std_reference", pd.Series(np.nan, index=df1.index))).to_numpy(dtype=float), fmt='-o', ms=3, capsize=2, label=f"Reference (L{lab})", color="tab:blue", alpha=0.9)
+                        else:
+                            ax1.plot(x, ma_t, label=f"Target (L{lab})", color="tab:red")
+                            ax1.plot(x, ma_r, label=f"Reference (L{lab})", color="tab:blue")
+                        ax1.set_xlabel("Radial % (0=center, 100=boundary)")
+                        ax1.set_ylabel("Mean intensity")
+                        ax1.grid(True, alpha=0.3)
+                        ax2 = ax1.twinx()
+                        ma_ratio = _moving_average_nan(df1["mean_ratio_T_over_R"].to_numpy(dtype=float), int(win)) if win and int(win) > 1 else df1["mean_ratio_T_over_R"].to_numpy(dtype=float)
+                        if bool(show_err):
+                            yerr_ratio = df1.get("sem_ratio_T_over_R", df1.get("std_ratio_T_over_R", pd.Series(np.nan, index=df1.index))).to_numpy(dtype=float)
+                            ax2.errorbar(x, ma_ratio, yerr=yerr_ratio, fmt='-s', ms=3, capsize=2, label="T/R", color="tab:green", alpha=0.9)
+                        else:
+                            ax2.plot(x, ma_ratio, label="T/R", color="tab:green", linestyle="--")
+                        ax2.set_ylabel("Mean ratio (T/R)")
+                        lines1, labels1 = ax1.get_legend_handles_labels()
+                        lines2, labels2 = ax2.get_legend_handles_labels()
+                        ax1.legend(lines1 + lines2, labels1 + labels2, loc="best")
+                        buf = io.BytesIO()
+                        fig.tight_layout()
+                        fig.savefig(buf, format="png", dpi=150)
+                        plt.close(fig)
+                        buf.seek(0)
+                        plot1 = Image.open(buf).copy()
+                        buf.close()
+                        return df1, tmp_csv.name, plot1, cache_df, cache_csv, cache_plot, cache_params
+                run_prof_single_btn.click(
+                    fn=_radial_profile_single_or_all_cb,
+                    inputs=[tgt, ref, masks_state, prof_label, tgt_chan, ref_chan, prof_start, prof_end, prof_step, prof_window, prof_show_err, pp_bg_enable, pp_bg_mode, pp_bg_radius, pp_dark_pct, pp_norm_enable, pp_norm_method, bak_tar, bak_ref, prof_cache_df_state, prof_cache_csv_state, prof_cache_plot_state, prof_cache_params_state],
+                    outputs=[profile_table, profile_csv, profile_plot, prof_cache_df_state, prof_cache_csv_state, prof_cache_plot_state, prof_cache_params_state],
                 )
                 # Target/Reference masking (no ROI coupling)
                 def _apply_mask_generic(img, m, ch, sat, mode, p, mino, name):
@@ -944,20 +1844,6 @@ def build_ui():
                     outputs=[ref_pct],
                 )
 
-                # Ensure initial visibility on app load after settings are restored
-                # def _init_pct_vis(t_mode: str, r_mode: str):
-                #     tm = (str(t_mode) if t_mode is not None else '').lower()
-                #     rm = (str(r_mode) if r_mode is not None else '').lower()
-                #     return (
-                #         gr.update(visible=(tm in ("global_percentile", "per_cell_percentile"))),
-                #         gr.update(visible=(rm in ("global_percentile", "per_cell_percentile"))),
-                #     )
-                # demo.load(
-                #     fn=_init_pct_vis,
-                #     inputs=[tgt_mask_mode, ref_mask_mode],
-                #     outputs=[tgt_pct, ref_pct],
-                # )
-
                 def _pp_bg_mode_changed_int(mode: str):
                     m = (mode or "rolling").lower()
                     return (
@@ -985,7 +1871,7 @@ def build_ui():
                             out_ref_bg = compute_dark_background(ref_img, rchan, float(dark_pct), use_native_scale=True)
                         except Exception:
                             out_ref_bg = man_r
-                    # Prepare manual values to pass
+                    # Prepare manual values to pass (only used if mode is manual)
                     man_t = float(out_tar_bg) if (bg_en and bg_mode_s == "manual") else None
                     man_r = float(out_ref_bg) if (bg_en and bg_mode_s == "manual") else None
                     res = integrate_and_quantify(
@@ -1015,6 +1901,7 @@ def build_ui():
                         tgt_chan, tgt_mask_mode, tgt_sat_limit, tgt_pct, tgt_min_obj,
                         ref_chan, ref_mask_mode, ref_sat_limit, ref_pct, ref_min_obj,
                         px_w, px_h,
+                        prof_start, prof_end, prof_step, prof_window, prof_show_err,
                         label_scale,
                     ],
                     js=f"""
@@ -1028,6 +1915,7 @@ def build_ui():
                                 tgt_chan: 'gray', tgt_mask_mode: 'global_percentile', tgt_sat_limit: 254, tgt_pct: 75.0, tgt_min_obj: 50,
                                 ref_chan: 'gray', ref_mask_mode: 'global_percentile', ref_sat_limit: 254, ref_pct: 75.0, ref_min_obj: 50,
                                 px_w: 1.0, px_h: 1.0,
+                                prof_start: 0.0, prof_end: 150.0, prof_step: 5.0, prof_window: 1, prof_show_err: true,
                                 label_scale: {float(LABEL_SCALE)},
                             }};
                             let s = raw ? {{...d, ...JSON.parse(raw)}} : d;
@@ -1063,6 +1951,11 @@ def build_ui():
                                 s.ref_min_obj,
                                 s.px_w,
                                 s.px_h,
+                                s.prof_start,
+                                s.prof_end,
+                                s.prof_step,
+                                s.prof_window,
+                                s.prof_show_err,
                                 s.label_scale,
                             ];
                         }} catch (e) {{
@@ -1074,6 +1967,7 @@ def build_ui():
                                 'gray', 'global_percentile', 254, 75.0, 50,
                                 'gray', 'global_percentile', 254, 75.0, 50,
                                 1.0, 1.0,
+                                0.0, 150.0, 5.0, 1, true,
                                 {float(LABEL_SCALE)},
                             ];
                         }}
@@ -1108,6 +2002,7 @@ def build_ui():
                     (tgt_chan, 'tgt_chan'), (tgt_mask_mode, 'tgt_mask_mode'), (tgt_sat_limit, 'tgt_sat_limit'), (tgt_pct, 'tgt_pct'), (tgt_min_obj, 'tgt_min_obj'),
                     (ref_chan, 'ref_chan'), (ref_mask_mode, 'ref_mask_mode'), (ref_sat_limit, 'ref_sat_limit'), (ref_pct, 'ref_pct'), (ref_min_obj, 'ref_min_obj'),
                     (px_w, 'px_w'), (px_h, 'px_h'), (label_scale, 'label_scale'),
+                    (prof_start, 'prof_start'), (prof_end, 'prof_end'), (prof_step, 'prof_step'), (prof_window, 'prof_window'), (prof_show_err, 'prof_show_err'),
                 ]:
                     _persist_change(comp, key)
 
@@ -1130,6 +2025,7 @@ def build_ui():
                         tgt_chan, tgt_mask_mode, tgt_sat_limit, tgt_pct, tgt_min_obj,
                         ref_chan, ref_mask_mode, ref_sat_limit, ref_pct, ref_min_obj,
                         px_w, px_h,
+                        prof_start, prof_end, prof_step, prof_window, prof_show_err,
                         label_scale,
                     ],
                     js=f"""
@@ -1147,6 +2043,7 @@ def build_ui():
                             'gray', 'none', 254, 75.0, 50,
                             'gray', 'none', 254, 75.0, 50,
                             1.0, 1.0,
+                            0.0, 150.0, 5.0, 1, true,
                             {float(LABEL_SCALE)},
                         ];
                     }}
