@@ -1300,10 +1300,14 @@ def integrate_and_quantify(
             mean_r_mem = float(np.mean(ref_gray_nat[idx]))
             std_r_mem = float(np.std(ref_gray_nat[idx]))
             sum_r_mem = float(np.sum(ref_gray_nat[idx]))
-            if np.all(ref_gray_nat[idx] > 0):
-                ratio_vals = tgt_gray_nat[idx] / ref_gray_nat[idx]
+            # Compute T/R on pixels where reference > 0 only (avoid spurious NaNs when outer > 100% includes background)
+            r_sub = ref_gray_nat[idx]
+            t_sub = tgt_gray_nat[idx]
+            valid = r_sub > 0
+            if np.any(valid):
+                ratio_vals = (t_sub[valid] / r_sub[valid]).astype(np.float64)
                 ratio_mean = float(np.mean(ratio_vals))
-                ratio_std = float(np.std(ratio_vals))
+                ratio_std = float(np.std(ratio_vals)) if ratio_vals.size > 1 else np.nan
                 ratio_sum = float(np.sum(ratio_vals))
             else:
                 ratio_mean = ratio_std = ratio_sum = np.nan

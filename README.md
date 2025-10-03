@@ -68,6 +68,7 @@ Outputs: label mask TIFF, mask TIFF, table CSV, image overlay previews.
 - Optionally AND with Radial mask
 - Produces per-cell table (CSV), AND mask (.npy), and a Target/Reference ratio image (.npy and preview)
   - If Preprocess is enabled, both visualization and measurement use the preprocessed arrays (for Dual/Single). For saturation gating in masking, the original image scale is used.
+  - Ratio (T/R) is computed using only pixels where Reference > 0. This avoids invalid divisions especially when Radial outer > 100% includes background outside cells.
 
 ## UI Controls (by section) 🧰
 
@@ -143,6 +144,6 @@ poetry run uvicorn serve:app --port 7860
 
 ## Known limitations / next steps ⚠️
 
-- Radial outer >100% includes background near the cell. If you want Target/Reference masks computed only within ≤100%, add a toggle to clip ROI at 100%.
+- Radial outer >100% includes background near the cell. As of now, T/R uses only pixels with Reference > 0, to avoid NaN/inf. If you want Target/Reference masks computed strictly within ≤100% (inside-cell only), consider adding a toggle to clip ROI at 100%.
 - No persistent project/session saving; use the exported `.npy`/`.csv` files to reproduce results.
 - The Single image flow computes single-channel statistics only (no ratio). Ratios remain in the Dual images flow.
