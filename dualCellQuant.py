@@ -1187,6 +1187,127 @@ def apply_mask(
 # Step 5: Integrate masks and quantify (preprocess here)
 # -----------------------
 
+def compute_radial_peak_difference(
+    radial_df: pd.DataFrame,
+    quant_df: pd.DataFrame = None,
+    min_pct: float = 60.0,
+    max_pct: float = 120.0,
+) -> pd.DataFrame:
+    """
+    Compute for each label the center_pct where mean_target and mean_reference reach maximum
+    within the specified range, and the difference between these positions.
+    Also computes distances in pixels and micrometers using equivalent radius from area.
+    
+    Args:
+        radial_df: DataFrame from radial_profile_all_cells with columns: label, center_pct, mean_target, mean_reference
+        quant_df: DataFrame from integrate_and_quantify with area_and_px and area_and_um2 columns (optional)
+        min_pct: Minimum center_pct to consider (default: 60.0)
+        max_pct: Maximum center_pct to consider (default: 120.0)
+    
+    Returns:
+        DataFrame with columns: label, max_target_center_pct, max_reference_center_pct, difference_pct,
+                                max_target_px, max_reference_px, difference_px,
+                                max_target_um, max_reference_um, difference_um
+    """
+    if radial_df is None or radial_df.empty:
+        return pd.DataFrame(columns=[
+            "label", "max_target_center_pct", "max_reference_center_pct", "difference_pct",
+            "max_target_px", "max_reference_px", "difference_px",
+            "max_target_um", "max_reference_um", "difference_um"
+        ])
+    
+    # Filter by range
+    df_filtered = radial_df[
+        (radial_df["center_pct"] >= min_pct) & 
+        (radial_df["center_pct"] <= max_pct)
+    ].copy()
+    
+    if df_filtered.empty:
+        return pd.DataFrame(columns=[
+            "label", "max_target_center_pct", "max_reference_center_pct", "difference_pct",
+            "max_target_px", "max_reference_px", "difference_px",
+            "max_target_um", "max_reference_um", "difference_um"
+        ])
+    
+    # Build lookup for equivalent radius per label
+    radius_px_map = {}
+    radius_um_map = {}
+    if quant_df is not None and not quant_df.empty:
+        for _, row in quant_df.iterrows():
+            lab = int(row.get("label", -1))
+            area_px = float(row.get("area_and_px", 0.0))
+            area_um2 = float(row.get("area_and_um2", 0.0))
+            if area_px > 0:
+                r_eq_px = float(np.sqrt(area_px / np.pi))
+                radius_px_map[lab] = r_eq_px
+            if area_um2 > 0:
+                r_eq_um = float(np.sqrt(area_um2 / np.pi))
+                radius_um_map[lab] = r_eq_um
+    
+    labels = df_filtered["label"].unique()
+    results = []
+    
+    for lab in labels:
+        lab_data = df_filtered[df_filtered["label"] == lab]
+        
+        # Find center_pct where mean_target is maximum
+        valid_target = lab_data.dropna(subset=["mean_target"])
+        if not valid_target.empty:
+            max_target_idx = valid_target["mean_target"].idxmax()
+            max_target_pct = valid_target.loc[max_target_idx, "center_pct"]
+        else:
+            max_target_pct = np.nan
+        
+        # Find center_pct where mean_reference is maximum
+        valid_reference = lab_data.dropna(subset=["mean_reference"])
+        if not valid_reference.empty:
+            max_reference_idx = valid_reference["mean_reference"].idxmax()
+            max_reference_pct = valid_reference.loc[max_reference_idx, "center_pct"]
+        else:
+            max_reference_pct = np.nan
+        
+        # Calculate difference in %
+        if np.isfinite(max_target_pct) and np.isfinite(max_reference_pct):
+            diff_pct = max_target_pct - max_reference_pct
+        else:
+            diff_pct = np.nan
+        
+        # Convert to pixel and um using equivalent radius
+        # r_eq represents the distance from 0% (center) to 100% (boundary)
+        lab_int = int(lab)
+        r_eq_px = radius_px_map.get(lab_int, np.nan)
+        r_eq_um = radius_um_map.get(lab_int, np.nan)
+        
+        if np.isfinite(r_eq_px):
+            max_target_px = (max_target_pct / 100.0) * r_eq_px if np.isfinite(max_target_pct) else np.nan
+            max_reference_px = (max_reference_pct / 100.0) * r_eq_px if np.isfinite(max_reference_pct) else np.nan
+            diff_px = (diff_pct / 100.0) * r_eq_px if np.isfinite(diff_pct) else np.nan
+        else:
+            max_target_px = max_reference_px = diff_px = np.nan
+        
+        if np.isfinite(r_eq_um):
+            max_target_um = (max_target_pct / 100.0) * r_eq_um if np.isfinite(max_target_pct) else np.nan
+            max_reference_um = (max_reference_pct / 100.0) * r_eq_um if np.isfinite(max_reference_pct) else np.nan
+            diff_um = (diff_pct / 100.0) * r_eq_um if np.isfinite(diff_pct) else np.nan
+        else:
+            max_target_um = max_reference_um = diff_um = np.nan
+        
+        results.append({
+            "label": lab_int,
+            "max_target_center_pct": max_target_pct,
+            "max_reference_center_pct": max_reference_pct,
+            "difference_pct": diff_pct,
+            "max_target_px": max_target_px,
+            "max_reference_px": max_reference_px,
+            "difference_px": diff_px,
+            "max_target_um": max_target_um,
+            "max_reference_um": max_reference_um,
+            "difference_um": diff_um,
+        })
+    
+    return pd.DataFrame(results).sort_values("label")
+
+
 def integrate_and_quantify(
     target_img: Image.Image,
     reference_img: Image.Image,
@@ -1385,6 +1506,7 @@ def build_ui():
                 radial_label_state = gr.State()
                 tgt_mask_state = gr.State()
                 ref_mask_state = gr.State()
+                radial_quant_df_state = gr.State()  # Store radial quantification DataFrame
                 with gr.Row():
                     with gr.Column():
                         gr.Markdown("## Input Images")
@@ -1439,7 +1561,7 @@ def build_ui():
                             with gr.Column():
                                 ref_overlay = gr.Image(type="pil", label="Reference mask overlay", width=600)
                                 ref_tiff = gr.File(label="Download reference mask (TIFF)")
-                        gr.Markdown("## 4. Integrate & Quantify")
+                        gr.Markdown("## 3. Integrate & Quantify")
                         with gr.Accordion("Integrate & Quantify", open=True):
                             with gr.Column():
                                 pp_bg_enable = gr.Checkbox(value=False, label="Background correction")
@@ -1465,7 +1587,7 @@ def build_ui():
                                     px_w = gr.Number(value=1.0, label="Pixel width (µm)", scale=1)
                                     px_h = gr.Number(value=1.0, label="Pixel height (µm)", scale=1)
                         
-                        integrate_btn = gr.Button("4. Integrate & Quantify")
+                        integrate_btn = gr.Button("3. Integrate & Quantify")
                         
                         with gr.Row():
                             integrate_tar_overlay = gr.Image(type="pil", label="Integrate Target overlay (AND mask)", width=600)
@@ -1479,14 +1601,14 @@ def build_ui():
                             ref_on_and_img = gr.Image(type="pil", label="Reference on AND mask", width=600)
                             ratio_img = gr.Image(type="pil", label="Ratio (Target/Reference) on AND mask", width=600)
                             
-                        gr.Markdown("## 5. Build Radial Mask & Quantify")
+                        gr.Markdown("## 4. Build Radial Mask & Quantify")
                         # Radial mask section moved here (after integration)
                         with gr.Accordion("Radial mask (optional, after integration)", open=True):
                             rad_in = gr.Slider(0.0, 150.0, value=0.0, step=1.0, label="Radial inner % (0=中心)")
                             rad_out = gr.Slider(0.0, 150.0, value=100.0, step=1.0, label="Radial outer % (100=境界)")
                             rad_min_obj = gr.Slider(0, 2000, value=50, step=10, label="Remove small objects (px)")
 
-                        run_rad_btn = gr.Button("5. Build Radial mask & Quantify")
+                        run_rad_btn = gr.Button("4. Build Radial mask & Quantify")
                         # rad_overlay = gr.Image(type="pil", label="Radial mask overlay", width=600)
                         rad_overlay=gr.State()
                         
@@ -1503,7 +1625,7 @@ def build_ui():
                             radial_tgt_on_and_img = gr.Image(type="pil", label="Target on Radial AND mask", width=600)
                             radial_ref_on_and_img = gr.Image(type="pil", label="Reference on Radial AND mask", width=600)
                             radial_ratio_img = gr.Image(type="pil", label="Ratio (Target/Reference) on Radial AND mask", width=600)
-                        gr.Markdown("## 6. Radial Intensity Profile")
+                        gr.Markdown("## 5. Radial Intensity Profile")
                         # Radial profile (banded) section
                         with gr.Accordion("Radial intensity profile", open=True):
                             prof_start = gr.Number(value=0.0, label="Start %", scale=1)
@@ -1517,7 +1639,7 @@ def build_ui():
                         prof_cache_plot_state = gr.State()
                         prof_cache_params_state = gr.State()
                         
-                        run_prof_btn = gr.Button("6. Compute Radial profile")
+                        run_prof_btn = gr.Button("5. Compute Radial profile")
                         
                         profile_table = gr.Dataframe(label="Radial profile (all cells)", interactive=False, pinned_columns=1)
                         profile_csv = gr.File(label="Download radial profile CSV")
@@ -1530,6 +1652,16 @@ def build_ui():
                         
                         profile_plot = gr.Image(type="pil", label="Radial profile plot", width=800)
                         
+                        gr.Markdown("## 6. Radial Peak Difference Analysis")
+                        # Peak difference section
+                        with gr.Accordion("Peak difference analysis", open=True):
+                            peak_min_pct = gr.Number(value=60.0, label="Min center_pct (%)", scale=1)
+                            peak_max_pct = gr.Number(value=120.0, label="Max center_pct (%)", scale=1)
+                        
+                        run_peak_diff_btn = gr.Button("6. Compute Peak Differences")
+                        
+                        peak_diff_table = gr.Dataframe(label="Peak difference per label", interactive=False, pinned_columns=1)
+                        peak_diff_csv = gr.File(label="Download peak difference CSV")
 
                 # Segmentation
                 def _run_seg(tgt_img, ref_img, seg_source, seg_chan, diameter, flow_th, cellprob_th, use_gpu):
@@ -1561,11 +1693,11 @@ def build_ui():
                         bg_mode=str(bg_mode), bg_dark_pct=float(dark_pct),
                         manual_tar_bg=mt, manual_ref_bg=mr, roi_mask=rad_bool, roi_labels=rad_lbl, ratio_ref_epsilon=float(eps),
                     )
-                    return ov, rad_bool, rad_lbl, tiff_bool, tiff_lbl, q_df, q_csv, q_tar_ov, q_ref_ov, q_tgt_on, q_ref_on, q_ratio
+                    return ov, rad_bool, rad_lbl, tiff_bool, tiff_lbl, q_df, q_csv, q_tar_ov, q_ref_ov, q_tgt_on, q_ref_on, q_ratio, q_df
                 run_rad_btn.click(
                     fn=_radial_and_quantify,
                     inputs=[tgt, ref, masks_state, rad_in, rad_out, rad_min_obj, tgt_mask_state, ref_mask_state, tgt_chan, ref_chan, px_w, px_h, pp_bg_enable, pp_bg_mode, pp_bg_radius, pp_dark_pct, pp_norm_enable, pp_norm_method, bak_tar, bak_ref, ratio_eps],
-                    outputs=[rad_overlay, radial_mask_state, radial_label_state, rad_tiff, rad_lbl_tiff, radial_table, radial_csv, radial_tar_overlay, radial_ref_overlay, radial_tgt_on_and_img, radial_ref_on_and_img, radial_ratio_img],
+                    outputs=[rad_overlay, radial_mask_state, radial_label_state, rad_tiff, rad_lbl_tiff, radial_table, radial_csv, radial_tar_overlay, radial_ref_overlay, radial_tgt_on_and_img, radial_ref_on_and_img, radial_ratio_img, radial_quant_df_state],
                 )
                 # Radial profile callback
                 def _radial_profile_cb(tgt_img, ref_img, masks, tchan, rchan, s, e, st, win, show_err, bg_en, bg_mode, bg_r, dark_pct, nm_en, nm_m, man_t, man_r, eps):
@@ -1835,6 +1967,29 @@ def build_ui():
                     inputs=[tgt, ref, masks_state, prof_label, tgt_chan, ref_chan, prof_start, prof_end, prof_step, prof_window, prof_show_err, pp_bg_enable, pp_bg_mode, pp_bg_radius, pp_dark_pct, pp_norm_enable, pp_norm_method, bak_tar, bak_ref, ratio_eps, prof_cache_df_state, prof_cache_csv_state, prof_cache_plot_state, prof_cache_params_state],
                     outputs=[profile_table, profile_csv, profile_plot, prof_cache_df_state, prof_cache_csv_state, prof_cache_plot_state, prof_cache_params_state],
                 )
+                
+                # Peak difference callback
+                def _peak_diff_cb(cached_df, quant_df, min_pct, max_pct):
+                    if cached_df is None or cached_df.empty:
+                        return gr.update(value=pd.DataFrame()), None
+                    
+                    peak_df = compute_radial_peak_difference(cached_df, quant_df, float(min_pct), float(max_pct))
+                    
+                    if peak_df.empty:
+                        return gr.update(value=pd.DataFrame()), None
+                    
+                    # Save to CSV
+                    tmp_csv = tempfile.NamedTemporaryFile(delete=False, suffix="_peak_difference.csv")
+                    peak_df.to_csv(tmp_csv.name, index=False)
+                    
+                    return peak_df, tmp_csv.name
+                
+                run_peak_diff_btn.click(
+                    fn=_peak_diff_cb,
+                    inputs=[prof_cache_df_state, radial_quant_df_state, peak_min_pct, peak_max_pct],
+                    outputs=[peak_diff_table, peak_diff_csv],
+                )
+                
                 # Target/Reference masking (no ROI coupling)
                 def _apply_mask_generic(img, m, ch, sat, mode, p, mino, name):
                     return apply_mask(img, m, ch, sat, mode, p, mino, None, name)
