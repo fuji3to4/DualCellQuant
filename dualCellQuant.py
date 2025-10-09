@@ -1187,6 +1187,238 @@ def apply_mask(
 # Step 5: Integrate masks and quantify (preprocess here)
 # -----------------------
 
+# -----------------------
+# Radial profile plot with peak markers
+# -----------------------
+
+def plot_radial_profile_with_peaks(
+    df: pd.DataFrame,
+    peak_df: pd.DataFrame = None,
+    label_filter: int | str = "All",
+    window_bins: int = 1,
+    show_errorbars: bool = True,
+    title_suffix: str = "",
+) -> Image.Image:
+    """
+    Generate radial profile plot with optional peak difference markers.
+    
+    Args:
+        df: Radial profile DataFrame with columns: label, center_pct, mean_target, mean_reference, etc.
+        peak_df: Peak difference DataFrame with columns: label, max_target_center_pct, max_reference_center_pct, difference_pct, etc.
+        label_filter: "All" for pooled average, or specific label number for single-cell plot
+        window_bins: Smoothing window size (1 = no smoothing)
+        show_errorbars: Whether to show error bars (SEM)
+        title_suffix: Optional text to append to plot title
+    
+    Returns:
+        PIL Image of the plot
+    """
+    if df is None or df.empty:
+        # Return blank plot
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.text(0.5, 0.5, "No data available", ha="center", va="center", transform=ax.transAxes)
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=150)
+        plt.close(fig)
+        buf.seek(0)
+        img = Image.open(buf).copy()
+        buf.close()
+        return img
+    
+    # Determine if plotting All or single label
+    is_all = str(label_filter) == "All"
+    
+    if is_all:
+        # Pool data across all labels, weighted by pixel count
+        bins = np.sort(df["center_pct"].dropna().unique())
+        M_t = []; SEM_t = []; M_r = []; SEM_r = []; M_ratio = []; SEM_ratio = []
+        for c in bins:
+            g = df[df["center_pct"] == c]
+            # Target pooled
+            gi = g.dropna(subset=["mean_target", "std_target", "count_px"]) if not g.empty else g
+            n = gi["count_px"].to_numpy(dtype=float)
+            m = gi["mean_target"].to_numpy(dtype=float)
+            s = gi["std_target"].to_numpy(dtype=float)
+            N = float(np.nansum(n)) if gi is not None else 0.0
+            if N > 0:
+                M = float(np.nansum(n * m) / N)
+                if N > 1 and gi.shape[0] > 0:
+                    SS_within = np.nansum((n - 1) * (s ** 2))
+                    SS_between = np.nansum(n * ((m - M) ** 2))
+                    var = (SS_within + SS_between) / (N - 1)
+                    sem = np.sqrt(var) / np.sqrt(N)
+                else:
+                    sem = np.nan
+            else:
+                M = np.nan; sem = np.nan
+            M_t.append(M); SEM_t.append(sem)
+            # Reference pooled
+            gi = g.dropna(subset=["mean_reference", "std_reference", "count_px"]) if not g.empty else g
+            n = gi["count_px"].to_numpy(dtype=float)
+            m = gi["mean_reference"].to_numpy(dtype=float)
+            s = gi["std_reference"].to_numpy(dtype=float)
+            N = float(np.nansum(n)) if gi is not None else 0.0
+            if N > 0:
+                M = float(np.nansum(n * m) / N)
+                if N > 1 and gi.shape[0] > 0:
+                    SS_within = np.nansum((n - 1) * (s ** 2))
+                    SS_between = np.nansum(n * ((m - M) ** 2))
+                    var = (SS_within + SS_between) / (N - 1)
+                    sem = np.sqrt(var) / np.sqrt(N)
+                else:
+                    sem = np.nan
+            else:
+                M = np.nan; sem = np.nan
+            M_r.append(M); SEM_r.append(sem)
+            # Ratio pooled
+            if "count_ratio_px" in g.columns:
+                gi = g.dropna(subset=["mean_ratio_T_over_R"]) if not g.empty else g
+                nr = gi.get("count_ratio_px", pd.Series(np.zeros(len(gi)), index=gi.index)).to_numpy(dtype=float)
+                mr = gi["mean_ratio_T_over_R"].to_numpy(dtype=float)
+                sr = gi.get("std_ratio_T_over_R", pd.Series(np.nan, index=gi.index)).to_numpy(dtype=float)
+                NR = float(np.nansum(nr)) if gi is not None else 0.0
+                if NR > 0:
+                    MR = float(np.nansum(nr * mr) / NR)
+                    if NR > 1 and gi.shape[0] > 0:
+                        SS_within_r = np.nansum((nr - 1) * (sr ** 2))
+                        SS_between_r = np.nansum(nr * ((mr - MR) ** 2))
+                        var_r = (SS_within_r + SS_between_r) / (NR - 1)
+                        sem_r = np.sqrt(var_r) / np.sqrt(NR)
+                    else:
+                        sem_r = np.nan
+                else:
+                    MR = np.nan; sem_r = np.nan
+            else:
+                MR = np.nan; sem_r = np.nan
+            M_ratio.append(MR); SEM_ratio.append(sem_r)
+        
+        x = bins
+        ma_t = _moving_average_nan(np.array(M_t, dtype=float), int(window_bins)) if window_bins and int(window_bins) > 1 else np.array(M_t, dtype=float)
+        ma_r = _moving_average_nan(np.array(M_r, dtype=float), int(window_bins)) if window_bins and int(window_bins) > 1 else np.array(M_r, dtype=float)
+        ma_ratio = _moving_average_nan(np.array(M_ratio, dtype=float), int(window_bins)) if window_bins and int(window_bins) > 1 else np.array(M_ratio, dtype=float)
+        sem_t_arr = np.array(SEM_t, dtype=float)
+        sem_r_arr = np.array(SEM_r, dtype=float)
+        sem_ratio_arr = np.array(SEM_ratio, dtype=float)
+        plot_label_text = "All cells"
+    else:
+        # Single label
+        try:
+            lab_int = int(label_filter)
+        except:
+            lab_int = None
+        if lab_int is None:
+            # Return blank
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.text(0.5, 0.5, "Invalid label", ha="center", va="center", transform=ax.transAxes)
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=150)
+            plt.close(fig)
+            buf.seek(0)
+            img = Image.open(buf).copy()
+            buf.close()
+            return img
+        df_lab = df[df["label"] == lab_int].copy()
+        if df_lab.empty:
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.text(0.5, 0.5, f"No data for label {lab_int}", ha="center", va="center", transform=ax.transAxes)
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=150)
+            plt.close(fig)
+            buf.seek(0)
+            img = Image.open(buf).copy()
+            buf.close()
+            return img
+        x = df_lab["center_pct"].to_numpy(dtype=float)
+        ma_t = _moving_average_nan(df_lab["mean_target"].to_numpy(dtype=float), int(window_bins)) if window_bins and int(window_bins) > 1 else df_lab["mean_target"].to_numpy(dtype=float)
+        ma_r = _moving_average_nan(df_lab["mean_reference"].to_numpy(dtype=float), int(window_bins)) if window_bins and int(window_bins) > 1 else df_lab["mean_reference"].to_numpy(dtype=float)
+        ma_ratio = _moving_average_nan(df_lab["mean_ratio_T_over_R"].to_numpy(dtype=float), int(window_bins)) if window_bins and int(window_bins) > 1 else df_lab["mean_ratio_T_over_R"].to_numpy(dtype=float)
+        sem_t_arr = df_lab.get("sem_target", df_lab.get("std_target", pd.Series(np.nan, index=df_lab.index))).to_numpy(dtype=float)
+        sem_r_arr = df_lab.get("sem_reference", df_lab.get("std_reference", pd.Series(np.nan, index=df_lab.index))).to_numpy(dtype=float)
+        sem_ratio_arr = df_lab.get("sem_ratio_T_over_R", df_lab.get("std_ratio_T_over_R", pd.Series(np.nan, index=df_lab.index))).to_numpy(dtype=float)
+        plot_label_text = f"Label {lab_int}"
+    
+    # Create plot
+    fig, ax1 = plt.subplots(figsize=(7, 5))
+    if show_errorbars:
+        ax1.errorbar(x, ma_t, yerr=sem_t_arr, fmt='-o', ms=3, capsize=2, label="Target", color="tab:red", alpha=0.9)
+        ax1.errorbar(x, ma_r, yerr=sem_r_arr, fmt='-o', ms=3, capsize=2, label="Reference", color="tab:blue", alpha=0.9)
+    else:
+        ax1.plot(x, ma_t, label="Target", color="tab:red")
+        ax1.plot(x, ma_r, label="Reference", color="tab:blue")
+    ax1.set_xlabel("Radial % (0=center, 100=boundary)")
+    ax1.set_ylabel("Mean intensity")
+    ax1.grid(True, alpha=0.3)
+    
+    # Add peak markers if peak_df is provided
+    peak_annotation_text = None
+    if peak_df is not None and not peak_df.empty:
+        if is_all:
+            # For "All", we can't show individual peaks since they differ per cell
+            # But we could show a summary or skip
+            pass
+        else:
+            # For single label, show the peak positions
+            peak_row = peak_df[peak_df["label"] == lab_int]
+            if not peak_row.empty:
+                peak_row = peak_row.iloc[0]
+                max_t_pct = peak_row.get("max_target_center_pct", np.nan)
+                max_r_pct = peak_row.get("max_reference_center_pct", np.nan)
+                diff_pct = peak_row.get("difference_pct", np.nan)
+                diff_px = peak_row.get("difference_px", np.nan)
+                diff_um = peak_row.get("difference_um", np.nan)
+                
+                if np.isfinite(max_t_pct):
+                    ax1.axvline(max_t_pct, color="red", linestyle="--", alpha=0.5, linewidth=1.5, label=f"Target peak: {max_t_pct:.1f}%")
+                if np.isfinite(max_r_pct):
+                    ax1.axvline(max_r_pct, color="blue", linestyle="--", alpha=0.5, linewidth=1.5, label=f"Reference peak: {max_r_pct:.1f}%")
+                
+                # Build annotation text for difference
+                if np.isfinite(diff_pct):
+                    text_lines = [f"Δ = {diff_pct:.1f}%"]
+                    if np.isfinite(diff_px):
+                        text_lines.append(f"  (≈{diff_px:.2f} px)")
+                    if np.isfinite(diff_um):
+                        text_lines.append(f"  (≈{diff_um:.2f} μm)")
+                    peak_annotation_text = "\n".join(text_lines)
+    
+    ax2 = ax1.twinx()
+    if show_errorbars:
+        ax2.errorbar(x, ma_ratio, yerr=sem_ratio_arr, fmt='-s', ms=3, capsize=2, label="T/R", color="tab:green", alpha=0.9)
+    else:
+        ax2.plot(x, ma_ratio, label="T/R", color="tab:green", linestyle="--")
+    ax2.set_ylabel("Mean ratio (T/R)")
+    
+    # Combined legend - position at upper left to avoid peak markers
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left", fontsize=8)
+    
+    # Add peak difference annotation after legend (so it appears on top)
+    if peak_annotation_text is not None:
+        ax1.text(0.98, 0.95, peak_annotation_text, transform=ax1.transAxes,
+                verticalalignment="top", horizontalalignment="right",
+                bbox=dict(boxstyle="round,pad=0.5", facecolor="yellow", alpha=0.7),
+                fontsize=9, family="monospace")
+    
+    plot_title = f"Radial Profile - {plot_label_text}"
+    if title_suffix:
+        plot_title += f" {title_suffix}"
+    ax1.set_title(plot_title, fontsize=10)
+    
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+    img = Image.open(buf).copy()
+    buf.close()
+    return img
+
+
+# -----------------------
+# Peak difference computation
+# -----------------------
+
 def compute_radial_peak_difference(
     radial_df: pd.DataFrame,
     quant_df: pd.DataFrame = None,
@@ -1200,7 +1432,7 @@ def compute_radial_peak_difference(
     
     Args:
         radial_df: DataFrame from radial_profile_all_cells with columns: label, center_pct, mean_target, mean_reference
-        quant_df: DataFrame from integrate_and_quantify with area_and_px and area_and_um2 columns (optional)
+        quant_df: DataFrame from integrate_and_quantify with area_cell_px and area_cell_um2 columns (optional)
         min_pct: Minimum center_pct to consider (default: 60.0)
         max_pct: Maximum center_pct to consider (default: 120.0)
     
@@ -1234,15 +1466,25 @@ def compute_radial_peak_difference(
     radius_um_map = {}
     if quant_df is not None and not quant_df.empty:
         for _, row in quant_df.iterrows():
-            lab = int(row.get("label", -1))
-            area_px = float(row.get("area_and_px", 0.0))
-            area_um2 = float(row.get("area_and_um2", 0.0))
-            if area_px > 0:
-                r_eq_px = float(np.sqrt(area_px / np.pi))
-                radius_px_map[lab] = r_eq_px
-            if area_um2 > 0:
-                r_eq_um = float(np.sqrt(area_um2 / np.pi))
-                radius_um_map[lab] = r_eq_um
+            try:
+                lab = int(row.get("label", -1))
+                if lab <= 0:
+                    continue
+                # Use area_cell_px and area_cell_um2 (whole cell area from segmentation)
+                area_px = row.get("area_cell_px", 0.0)
+                area_um2 = row.get("area_cell_um2", 0.0)
+                
+                # Handle potential NaN or None values
+                if pd.notna(area_px) and float(area_px) > 0:
+                    r_eq_px = float(np.sqrt(float(area_px) / np.pi))
+                    radius_px_map[lab] = r_eq_px
+                    
+                if pd.notna(area_um2) and float(area_um2) > 0:
+                    r_eq_um = float(np.sqrt(float(area_um2) / np.pi))
+                    radius_um_map[lab] = r_eq_um
+            except Exception as e:
+                # Skip problematic rows
+                continue
     
     labels = df_filtered["label"].unique()
     results = []
@@ -1278,14 +1520,16 @@ def compute_radial_peak_difference(
         r_eq_px = radius_px_map.get(lab_int, np.nan)
         r_eq_um = radius_um_map.get(lab_int, np.nan)
         
-        if np.isfinite(r_eq_px):
+        # Compute pixel values
+        if np.isfinite(r_eq_px) and r_eq_px > 0:
             max_target_px = (max_target_pct / 100.0) * r_eq_px if np.isfinite(max_target_pct) else np.nan
             max_reference_px = (max_reference_pct / 100.0) * r_eq_px if np.isfinite(max_reference_pct) else np.nan
             diff_px = (diff_pct / 100.0) * r_eq_px if np.isfinite(diff_pct) else np.nan
         else:
             max_target_px = max_reference_px = diff_px = np.nan
         
-        if np.isfinite(r_eq_um):
+        # Compute micrometer values
+        if np.isfinite(r_eq_um) and r_eq_um > 0:
             max_target_um = (max_target_pct / 100.0) * r_eq_um if np.isfinite(max_target_pct) else np.nan
             max_reference_um = (max_reference_pct / 100.0) * r_eq_um if np.isfinite(max_reference_pct) else np.nan
             diff_um = (diff_pct / 100.0) * r_eq_um if np.isfinite(diff_pct) else np.nan
@@ -1506,6 +1750,7 @@ def build_ui():
                 radial_label_state = gr.State()
                 tgt_mask_state = gr.State()
                 ref_mask_state = gr.State()
+                quant_df_state = gr.State()  # Store Step 3 quantification DataFrame (for peak analysis)
                 radial_quant_df_state = gr.State()  # Store radial quantification DataFrame
                 with gr.Row():
                     with gr.Column():
@@ -1638,6 +1883,7 @@ def build_ui():
                         prof_cache_csv_state = gr.State()
                         prof_cache_plot_state = gr.State()
                         prof_cache_params_state = gr.State()
+                        peak_diff_state = gr.State()  # Store peak difference DataFrame for plot overlay
                         
                         run_prof_btn = gr.Button("5. Compute Radial profile")
                         
@@ -1745,7 +1991,7 @@ def build_ui():
                     inputs=[tgt, ref, masks_state, tgt_chan, ref_chan, prof_start, prof_end, prof_step, prof_window, prof_show_err, pp_bg_enable, pp_bg_mode, pp_bg_radius, pp_dark_pct, pp_norm_enable, pp_norm_method, bak_tar, bak_ref, ratio_eps],
                     outputs=[profile_table, profile_csv, profile_plot, prof_cache_df_state, prof_cache_csv_state, prof_cache_plot_state, prof_cache_params_state],
                 )
-                def _radial_profile_single_or_all_cb(tgt_img, ref_img, masks, label_val, tchan, rchan, s, e, st, win, show_err, bg_en, bg_mode, bg_r, dark_pct, nm_en, nm_m, man_t, man_r, eps, cache_df, cache_csv, cache_plot, cache_params):
+                def _radial_profile_single_or_all_cb(tgt_img, ref_img, masks, label_val, tchan, rchan, s, e, st, win, show_err, bg_en, bg_mode, bg_r, dark_pct, nm_en, nm_m, man_t, man_r, eps, cache_df, cache_csv, cache_plot, cache_params, peak_df):
                     bgm = str(bg_mode)
                     mt = float(man_t) if (bg_en and bgm == "manual") else None
                     mr = float(man_r) if (bg_en and bgm == "manual") else None
@@ -1773,104 +2019,12 @@ def build_ui():
                             return False
                     if str(label_val) == "All":
                         # Helper to rebuild All-cells mean plot from cached all-cells DF (no recompute)
-                        def _build_all_plot_from_df(df_all_in: pd.DataFrame, window_bins_int: int, show_err_bool: bool):
-                            # Group by bin using center_pct; compute pooled stats weighted by pixel counts
-                            bins = np.sort(df_all_in["center_pct"].dropna().unique())
-                            M_t = []; SEM_t = []; M_r = []; SEM_r = []; M_ratio = []; SEM_ratio = []
-                            for c in bins:
-                                g = df_all_in[df_all_in["center_pct"] == c]
-                                # Target pooled
-                                gi = g.dropna(subset=["mean_target", "std_target", "count_px"]) if not g.empty else g
-                                n = gi["count_px"].to_numpy(dtype=float)
-                                m = gi["mean_target"].to_numpy(dtype=float)
-                                s = gi["std_target"].to_numpy(dtype=float)
-                                N = float(np.nansum(n)) if gi is not None else 0.0
-                                if N > 0:
-                                    M = float(np.nansum(n * m) / N)
-                                    if N > 1 and gi.shape[0] > 0:
-                                        SS_within = np.nansum((n - 1) * (s ** 2))
-                                        SS_between = np.nansum(n * ((m - M) ** 2))
-                                        var = (SS_within + SS_between) / (N - 1)
-                                        sem = np.sqrt(var) / np.sqrt(N)
-                                    else:
-                                        sem = np.nan
-                                else:
-                                    M = np.nan; sem = np.nan
-                                M_t.append(M); SEM_t.append(sem)
-                                # Reference pooled
-                                gi = g.dropna(subset=["mean_reference", "std_reference", "count_px"]) if not g.empty else g
-                                n = gi["count_px"].to_numpy(dtype=float)
-                                m = gi["mean_reference"].to_numpy(dtype=float)
-                                s = gi["std_reference"].to_numpy(dtype=float)
-                                N = float(np.nansum(n)) if gi is not None else 0.0
-                                if N > 0:
-                                    M = float(np.nansum(n * m) / N)
-                                    if N > 1 and gi.shape[0] > 0:
-                                        SS_within = np.nansum((n - 1) * (s ** 2))
-                                        SS_between = np.nansum(n * ((m - M) ** 2))
-                                        var = (SS_within + SS_between) / (N - 1)
-                                        sem = np.sqrt(var) / np.sqrt(N)
-                                    else:
-                                        sem = np.nan
-                                else:
-                                    M = np.nan; sem = np.nan
-                                M_r.append(M); SEM_r.append(sem)
-                                # Ratio pooled based on per-pixel valid counts
-                                if "count_ratio_px" in g.columns:
-                                    gi = g.dropna(subset=["mean_ratio_T_over_R"]) if not g.empty else g
-                                    nr = gi.get("count_ratio_px", pd.Series(np.zeros(len(gi)), index=gi.index)).to_numpy(dtype=float)
-                                    mr = gi["mean_ratio_T_over_R"].to_numpy(dtype=float)
-                                    sr = gi.get("std_ratio_T_over_R", pd.Series(np.nan, index=gi.index)).to_numpy(dtype=float)
-                                    NR = float(np.nansum(nr)) if gi is not None else 0.0
-                                    if NR > 0:
-                                        MR = float(np.nansum(nr * mr) / NR)
-                                        if NR > 1 and gi.shape[0] > 0:
-                                            SS_within_r = np.nansum((nr - 1) * (sr ** 2))
-                                            SS_between_r = np.nansum(nr * ((mr - MR) ** 2))
-                                            var_r = (SS_within_r + SS_between_r) / (NR - 1)
-                                            sem_r = np.sqrt(var_r) / np.sqrt(NR)
-                                        else:
-                                            sem_r = np.nan
-                                    else:
-                                        MR = np.nan; sem_r = np.nan
-                                else:
-                                    MR = np.nan; sem_r = np.nan
-                                M_ratio.append(MR); SEM_ratio.append(sem_r)
-                            x = bins
-                            ma_t = _moving_average_nan(np.array(M_t, dtype=float), int(win)) if win and int(win) > 1 else np.array(M_t, dtype=float)
-                            ma_r = _moving_average_nan(np.array(M_r, dtype=float), int(win)) if win and int(win) > 1 else np.array(M_r, dtype=float)
-                            ma_ratio = _moving_average_nan(np.array(M_ratio, dtype=float), int(win)) if win and int(win) > 1 else np.array(M_ratio, dtype=float)
-                            fig, ax1 = plt.subplots(figsize=(6, 4))
-                            if show_err_bool:
-                                ax1.errorbar(x, ma_t, yerr=np.array(SEM_t, dtype=float), fmt='-o', ms=3, capsize=2, label="Target", color="tab:red", alpha=0.9)
-                                ax1.errorbar(x, ma_r, yerr=np.array(SEM_r, dtype=float), fmt='-o', ms=3, capsize=2, label="Reference", color="tab:blue", alpha=0.9)
-                            else:
-                                ax1.plot(x, ma_t, label="Target", color="tab:red")
-                                ax1.plot(x, ma_r, label="Reference", color="tab:blue")
-                            ax1.set_xlabel("Radial % (0=center, 100=boundary)")
-                            ax1.set_ylabel("Mean intensity")
-                            ax1.grid(True, alpha=0.3)
-                            ax2 = ax1.twinx()
-                            if show_err_bool:
-                                ax2.errorbar(x, ma_ratio, yerr=np.array(SEM_ratio, dtype=float), fmt='-s', ms=3, capsize=2, label="T/R", color="tab:green", alpha=0.9)
-                            else:
-                                ax2.plot(x, ma_ratio, label="T/R", color="tab:green", linestyle="--")
-                            ax2.set_ylabel("Mean ratio (T/R)")
-                            lines1, labels1 = ax1.get_legend_handles_labels()
-                            lines2, labels2 = ax2.get_legend_handles_labels()
-                            ax1.legend(lines1 + lines2, labels1 + labels2, loc="best")
-                            buf = io.BytesIO()
-                            fig.tight_layout()
-                            fig.savefig(buf, format="png", dpi=150)
-                            plt.close(fig)
-                            buf.seek(0)
-                            out_img = Image.open(buf).copy()
-                            buf.close()
-                            return out_img
+                        def _build_all_plot_from_df(df_all_in: pd.DataFrame, window_bins_int: int, show_err_bool: bool, peak_df_in: pd.DataFrame = None):
+                            return plot_radial_profile_with_peaks(df_all_in, peak_df_in, "All", window_bins_int, show_err_bool)
 
                         # If cache matches, rebuild plot from cached DF (no recompute)
                         if (cache_df is not None) and params_equal(cache_params, cur_params):
-                            plot_img = _build_all_plot_from_df(cache_df, int(win), bool(show_err))
+                            plot_img = _build_all_plot_from_df(cache_df, int(win), bool(show_err), peak_df)
                             return cache_df, cache_csv, plot_img, cache_df, cache_csv, plot_img, cache_params
                         # Else recompute all-cells DF, then plot from DF only
                         df_all, csv_all = radial_profile_all_cells(
@@ -1880,7 +2034,7 @@ def build_ui():
                             bg_mode=str(bg_mode), bg_dark_pct=float(dark_pct),
                             manual_tar_bg=mt, manual_ref_bg=mr, ratio_ref_epsilon=float(eps),
                         )
-                        plot_img = _build_all_plot_from_df(df_all, int(win), bool(show_err))
+                        plot_img = _build_all_plot_from_df(df_all, int(win), bool(show_err), peak_df)
                         return df_all, csv_all, plot_img, df_all, csv_all, plot_img, cur_params
                     else:
                         try:
@@ -1929,65 +2083,45 @@ def build_ui():
                         # Write CSV for this label
                         tmp_csv = tempfile.NamedTemporaryFile(delete=False, suffix=f"_radial_profile_label_{lab}.csv")
                         df1.to_csv(tmp_csv.name, index=False)
-                        # Plot for this label based on df slice
-                        fig, ax1 = plt.subplots(figsize=(6, 4))
-                        x = df1["center_pct"].to_numpy(dtype=float)
-                        ma_t = _moving_average_nan(df1["mean_target"].to_numpy(dtype=float), int(win)) if win and int(win) > 1 else df1["mean_target"].to_numpy(dtype=float)
-                        ma_r = _moving_average_nan(df1["mean_reference"].to_numpy(dtype=float), int(win)) if win and int(win) > 1 else df1["mean_reference"].to_numpy(dtype=float)
-                        if bool(show_err):
-                            ax1.errorbar(x, ma_t, yerr=df1.get("sem_target", df1.get("std_target", pd.Series(np.nan, index=df1.index))).to_numpy(dtype=float), fmt='-o', ms=3, capsize=2, label=f"Target (L{lab})", color="tab:red", alpha=0.9)
-                            ax1.errorbar(x, ma_r, yerr=df1.get("sem_reference", df1.get("std_reference", pd.Series(np.nan, index=df1.index))).to_numpy(dtype=float), fmt='-o', ms=3, capsize=2, label=f"Reference (L{lab})", color="tab:blue", alpha=0.9)
-                        else:
-                            ax1.plot(x, ma_t, label=f"Target (L{lab})", color="tab:red")
-                            ax1.plot(x, ma_r, label=f"Reference (L{lab})", color="tab:blue")
-                        ax1.set_xlabel("Radial % (0=center, 100=boundary)")
-                        ax1.set_ylabel("Mean intensity")
-                        ax1.grid(True, alpha=0.3)
-                        ax2 = ax1.twinx()
-                        ma_ratio = _moving_average_nan(df1["mean_ratio_T_over_R"].to_numpy(dtype=float), int(win)) if win and int(win) > 1 else df1["mean_ratio_T_over_R"].to_numpy(dtype=float)
-                        if bool(show_err):
-                            yerr_ratio = df1.get("sem_ratio_T_over_R", df1.get("std_ratio_T_over_R", pd.Series(np.nan, index=df1.index))).to_numpy(dtype=float)
-                            ax2.errorbar(x, ma_ratio, yerr=yerr_ratio, fmt='-s', ms=3, capsize=2, label="T/R", color="tab:green", alpha=0.9)
-                        else:
-                            ax2.plot(x, ma_ratio, label="T/R", color="tab:green", linestyle="--")
-                        ax2.set_ylabel("Mean ratio (T/R)")
-                        lines1, labels1 = ax1.get_legend_handles_labels()
-                        lines2, labels2 = ax2.get_legend_handles_labels()
-                        ax1.legend(lines1 + lines2, labels1 + labels2, loc="best")
-                        buf = io.BytesIO()
-                        fig.tight_layout()
-                        fig.savefig(buf, format="png", dpi=150)
-                        plt.close(fig)
-                        buf.seek(0)
-                        plot1 = Image.open(buf).copy()
-                        buf.close()
+                        # Plot for this label using the new helper function
+                        plot1 = plot_radial_profile_with_peaks(use_df, peak_df, lab, int(win), bool(show_err))
                         return df1, tmp_csv.name, plot1, cache_df, cache_csv, cache_plot, cache_params
                 run_prof_single_btn.click(
                     fn=_radial_profile_single_or_all_cb,
-                    inputs=[tgt, ref, masks_state, prof_label, tgt_chan, ref_chan, prof_start, prof_end, prof_step, prof_window, prof_show_err, pp_bg_enable, pp_bg_mode, pp_bg_radius, pp_dark_pct, pp_norm_enable, pp_norm_method, bak_tar, bak_ref, ratio_eps, prof_cache_df_state, prof_cache_csv_state, prof_cache_plot_state, prof_cache_params_state],
+                    inputs=[tgt, ref, masks_state, prof_label, tgt_chan, ref_chan, prof_start, prof_end, prof_step, prof_window, prof_show_err, pp_bg_enable, pp_bg_mode, pp_bg_radius, pp_dark_pct, pp_norm_enable, pp_norm_method, bak_tar, bak_ref, ratio_eps, prof_cache_df_state, prof_cache_csv_state, prof_cache_plot_state, prof_cache_params_state, peak_diff_state],
                     outputs=[profile_table, profile_csv, profile_plot, prof_cache_df_state, prof_cache_csv_state, prof_cache_plot_state, prof_cache_params_state],
                 )
                 
                 # Peak difference callback
-                def _peak_diff_cb(cached_df, quant_df, min_pct, max_pct):
+                def _peak_diff_cb(cached_df, quant_df, min_pct, max_pct, label_val, win, show_err):
                     if cached_df is None or cached_df.empty:
-                        return gr.update(value=pd.DataFrame()), None
+                        return gr.update(value=pd.DataFrame()), None, gr.update(), None
                     
                     peak_df = compute_radial_peak_difference(cached_df, quant_df, float(min_pct), float(max_pct))
                     
                     if peak_df.empty:
-                        return gr.update(value=pd.DataFrame()), None
+                        return gr.update(value=pd.DataFrame()), None, gr.update(), None
                     
                     # Save to CSV
                     tmp_csv = tempfile.NamedTemporaryFile(delete=False, suffix="_peak_difference.csv")
                     peak_df.to_csv(tmp_csv.name, index=False)
+                    tmp_csv_path = tmp_csv.name  # Extract the path string
+                    tmp_csv.close()  # Close the file wrapper
                     
-                    return peak_df, tmp_csv.name
+                    # Regenerate plot with peak markers
+                    try:
+                        plot_img = plot_radial_profile_with_peaks(
+                            cached_df, peak_df, label_val, int(win), bool(show_err), title_suffix="(with peaks)"
+                        )
+                    except Exception:
+                        plot_img = None
+                    
+                    return peak_df, tmp_csv_path, plot_img, peak_df
                 
                 run_peak_diff_btn.click(
                     fn=_peak_diff_cb,
-                    inputs=[prof_cache_df_state, radial_quant_df_state, peak_min_pct, peak_max_pct],
-                    outputs=[peak_diff_table, peak_diff_csv],
+                    inputs=[prof_cache_df_state, quant_df_state, peak_min_pct, peak_max_pct, prof_label, prof_window, prof_show_err],
+                    outputs=[peak_diff_table, peak_diff_csv, profile_plot, peak_diff_state],
                 )
                 
                 # Target/Reference masking (no ROI coupling)
@@ -2056,12 +2190,12 @@ def build_ui():
                         bg_mode=str(bg_mode), bg_dark_pct=float(dark_pct),
                         manual_tar_bg=man_t, manual_ref_bg=man_r, ratio_ref_epsilon=float(eps),
                     )
-                    # Append background values to outputs so UI updates
-                    return (*res, out_tar_bg, out_ref_bg)
+                    # Append background values and DataFrame to outputs so UI updates
+                    return (*res[:8], out_tar_bg, out_ref_bg, res[3])  # res[3] is the DataFrame
                 integrate_btn.click(
                     fn=_integrate_callback,
                     inputs=[tgt, ref, masks_state, tgt_mask_state, ref_mask_state, tgt_chan, ref_chan, px_w, px_h, pp_bg_enable, pp_bg_mode, pp_bg_radius, pp_dark_pct, pp_norm_enable, pp_norm_method, bak_tar, bak_ref, ratio_eps],
-                    outputs=[integrate_tar_overlay, integrate_ref_overlay, mask_tiff, table, csv_file, tgt_on_and_img, ref_on_and_img, ratio_img, bak_tar, bak_ref],
+                    outputs=[integrate_tar_overlay, integrate_ref_overlay, mask_tiff, table, csv_file, tgt_on_and_img, ref_on_and_img, ratio_img, bak_tar, bak_ref, quant_df_state],
                 )
 
                 # ---------------- Persist settings (Dual) ----------------
