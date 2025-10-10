@@ -1,6 +1,6 @@
 [tool.poetry]
-name = "cellpose-sam-gradio"
-version = "0.1.0"
+name = "dualcellquant"
+version = "1.0.0"
 description = ""
 authors = ["fuji3to4 <sfujii@bio.kyutech.ac.jp>"]
 readme = "README.md"
