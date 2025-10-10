@@ -17,17 +17,25 @@ from dualcellquant import *
 from dualcellquant.ui_callbacks_stepbystep import create_stepbystep_callbacks
 from dualcellquant.ui_callbacks_radialprofile import create_radialprofile_callbacks
 
+# localStorage key for settings persistence
+SETTINGS_KEY = "dcq_settings_v1"
+
 def build_ui():
     with gr.Blocks(title="DualCellQuant") as demo:
         gr.Markdown(
             """
             # 🔬 **DualCellQuant**
             *Segment, filter, and compare cells across two fluorescence channels*
+
+
+            1. Run Cellpose-SAM to obtain segmentation masks.
+            2. Build Radial mask (optional).
+            3. Apply Target/Reference masks.
+            4. Integrate (Preprocess applied only here) and view results.
             
             **📋 Step-by-Step**: Detailed control (Steps 1→2→3→4)  
-            **⚡ Radial Profile**: One-click analysis (Steps 1→2→3→5→6)
-            
-            *Settings are automatically shared between tabs*
+            **⚡ Radial Profile**: 
+            One-click pipeline (Steps 1→2→3) with advanced radial profile and peak difference analysis.
             """
         )
         
@@ -173,45 +181,48 @@ def build_ui():
                             radial_tgt_on_and_img = gr.Image(type="pil", label="Target on Radial AND mask", width=600)
                             radial_ref_on_and_img = gr.Image(type="pil", label="Reference on Radial AND mask", width=600)
                             radial_ratio_img = gr.Image(type="pil", label="Ratio (Target/Reference) on Radial AND mask", width=600)
-                        gr.Markdown("## 5. Radial Intensity Profile")
-                        # Radial profile (banded) section
-                        with gr.Accordion("Radial intensity profile", open=True):
-                            prof_start = gr.Number(value=0.0, label="Start %", scale=1)
-                            prof_end = gr.Number(value=150.0, label="End %", scale=1)
-                            prof_window_size = gr.Number(value=5.0, label="Window size (%)", scale=1)
-                            prof_window_step = gr.Number(value=2.0, label="Window moving step (%)", scale=1)
-                            prof_smoothing = gr.Number(value=1, label="Plot smoothing (moving avg bins)", scale=1)
+                          
+                        gr.Markdown("## (Adv. Radial Intensity Profile)")  
+                        with gr.Accordion("Adv. Radial Intensity Profile", open=False):
+
+                            # Radial profile (banded) section
+                            with gr.Accordion("5. Radial intensity profile", open=True):
+                                prof_start = gr.Number(value=0.0, label="Start %", scale=1)
+                                prof_end = gr.Number(value=150.0, label="End %", scale=1)
+                                prof_window_size = gr.Number(value=5.0, label="Window size (%)", scale=1)
+                                prof_window_step = gr.Number(value=2.0, label="Window moving step (%)", scale=1)
+                                prof_smoothing = gr.Number(value=1, label="Plot smoothing (moving avg bins)", scale=1)
+                                
+                            # Cache states for radial profile results (computed by 6.)
+                            prof_cache_df_state = gr.State()
+                            prof_cache_csv_state = gr.State()
+                            prof_cache_plot_state = gr.State()
+                            prof_cache_params_state = gr.State()
+                            peak_diff_state = gr.State()  # Store peak difference DataFrame for plot overlay
                             
-                        # Cache states for radial profile results (computed by 6.)
-                        prof_cache_df_state = gr.State()
-                        prof_cache_csv_state = gr.State()
-                        prof_cache_plot_state = gr.State()
-                        prof_cache_params_state = gr.State()
-                        peak_diff_state = gr.State()  # Store peak difference DataFrame for plot overlay
-                        
-                        run_prof_btn = gr.Button("5. Compute Radial profile")
-                        
-                        profile_table = gr.Dataframe(label="Radial profile (all cells)", interactive=False, pinned_columns=1)
-                        profile_csv = gr.File(label="Download radial profile CSV")
-                        # Single-cell / All selector
-                        with gr.Row():
-                            with gr.Column():
-                                prof_label = gr.Dropdown(choices=["All"], value="All", label="Label for single-cell profile", allow_custom_value=False)
-                                prof_show_err = gr.Checkbox(value=True, label="Show error bars (SEM)")
-                            run_prof_single_btn = gr.Button("Changed label, update profile",)
-                        
-                        profile_plot = gr.Image(type="pil", label="Radial profile plot", width=800)
-                        
-                        gr.Markdown("## 6. Radial Peak Difference Analysis")
-                        # Peak difference section
-                        with gr.Accordion("Peak difference analysis", open=True):
-                            peak_min_pct = gr.Number(value=60.0, label="Min center_pct (%)", scale=1)
-                            peak_max_pct = gr.Number(value=120.0, label="Max center_pct (%)", scale=1)
-                        
-                        run_peak_diff_btn = gr.Button("6. Compute Peak Differences")
-                        
-                        peak_diff_table = gr.Dataframe(label="Peak difference per label", interactive=False, pinned_columns=1)
-                        peak_diff_csv = gr.File(label="Download peak difference CSV")
+                            run_prof_btn = gr.Button("5. Compute Radial profile")
+                            
+                            profile_table = gr.Dataframe(label="Radial profile (all cells)", interactive=False, pinned_columns=1)
+                            profile_csv = gr.File(label="Download radial profile CSV")
+                            # Single-cell / All selector
+                            with gr.Row():
+                                with gr.Column():
+                                    prof_label = gr.Dropdown(choices=["All"], value="All", label="Label for single-cell profile", allow_custom_value=False)
+                                    prof_show_err = gr.Checkbox(value=True, label="Show error bars (SEM)")
+                                run_prof_single_btn = gr.Button("Changed label, update profile",)
+                            
+                            profile_plot = gr.Image(type="pil", label="Radial profile plot", width=800)
+                            
+                            gr.Markdown("## 6. Radial Peak Difference Analysis")
+                            # Peak difference section
+                            with gr.Accordion("6. Peak difference analysis", open=True):
+                                peak_min_pct = gr.Number(value=60.0, label="Min center_pct (%)", scale=1)
+                                peak_max_pct = gr.Number(value=120.0, label="Max center_pct (%)", scale=1)
+                            
+                            run_peak_diff_btn = gr.Button("6. Compute Peak Differences")
+                            
+                            peak_diff_table = gr.Dataframe(label="Peak difference per label", interactive=False, pinned_columns=1)
+                            peak_diff_csv = gr.File(label="Download peak difference CSV")
 
                 # ==================== Wire up Step-by-Step callbacks ====================
                 stepbystep_components = {
@@ -256,8 +267,7 @@ def build_ui():
                 }
                 create_stepbystep_callbacks(stepbystep_components)
 
-                # ---------------- Persist settings (Dual) ----------------
-                SETTINGS_KEY = "dcq_settings_v1"
+                # ---------------- Persist settings (Step-by-Step tab) ----------------
                 demo.load(
                     fn=None,
                     inputs=[],
@@ -490,17 +500,14 @@ def build_ui():
                             prof_window_size_q = gr.Number(value=10.0, label="Window size %")
                             prof_window_step_q = gr.Number(value=5.0, label="Window step %")
                             prof_smoothing_q = gr.Number(value=1, label="Smoothing")
-                            prof_show_err_q = gr.Checkbox(value=True, label="Show error bars")
                         
-                        with gr.Accordion("6. Peak analysis settings", open=True):
-                            peak_min_pct_q = gr.Number(value=60.0, label="Min %")
-                            peak_max_pct_q = gr.Number(value=120.0, label="Max %")
+
                         
                         
                         gr.Markdown("---")
                         gr.Markdown("## 🚀 Run Analysis")
                         run_full_btn = gr.Button(
-                            "Run Full Pipeline (Steps 1→2→3→5→6)", 
+                            "Run Full Pipeline (Steps 1→2→3→5)", 
                             variant="primary", 
                             size="lg"
                         )
@@ -523,6 +530,7 @@ def build_ui():
                             with gr.TabItem("📈 Profile Plot"):
                                 prof_label_q = gr.Dropdown(choices=["All"], value="All", 
                                                           label="Select cell", allow_custom_value=False)
+                                prof_show_err_q = gr.Checkbox(value=True, label="Show error bars")
                                 run_prof_single_btn_q = gr.Button("Update plot for selected cell")
                                 profile_plot_q = gr.Image(type="pil", label="Radial intensity profile", width=900)
                             
@@ -530,13 +538,25 @@ def build_ui():
                                 profile_table_q = gr.Dataframe(label="Radial profile (all cells)", 
                                                               interactive=False, pinned_columns=1)
                                 profile_csv_q = gr.File(label="Download profile CSV")
-                            
+                        
+                        gr.Markdown("## ⚡ Peak Difference Analysis")
+                        with gr.Accordion("6. Peak analysis settings", open=True):
+                            with gr.Row():
+                                peak_min_pct_q = gr.Number(value=60.0, label="Min %")
+                                peak_max_pct_q = gr.Number(value=120.0, label="Max %")
 
-                            with gr.TabItem("📍 Peak Analysis"):
-                                run_peak_diff_btn_q = gr.Button("Compute Peak Differences")
-                                peak_diff_table_q = gr.Dataframe(label="Peak differences", 
-                                                                interactive=False, pinned_columns=1)
-                                peak_diff_csv_q = gr.File(label="Download peak CSV")
+
+                            run_peak_diff_btn_q = gr.Button("Compute Peak Differences")
+                            peak_diff_table_q = gr.Dataframe(label="Peak differences", 
+                                                            interactive=False, pinned_columns=1)
+                            peak_diff_csv_q = gr.File(label="Download peak CSV")
+                
+                # State variables for caching (Radial Profile tab)
+                prof_cache_df_state_q = gr.State()
+                prof_cache_csv_state_q = gr.State()
+                prof_cache_plot_state_q = gr.State()
+                prof_cache_params_state_q = gr.State()
+                peak_diff_state_q = gr.State()
                 
                 # ==================== Wire up Radial Profile callbacks ====================
                 radialprofile_components = {
@@ -561,6 +581,9 @@ def build_ui():
                     'profile_plot_q': profile_plot_q, 'profile_table_q': profile_table_q, 'profile_csv_q': profile_csv_q,
                     'run_peak_diff_btn_q': run_peak_diff_btn_q, 'peak_diff_table_q': peak_diff_table_q, 'peak_diff_csv_q': peak_diff_csv_q,
                     'masks_state': masks_state, 'quant_df_state': quant_df_state,
+                    'prof_cache_df_state_q': prof_cache_df_state_q, 'prof_cache_csv_state_q': prof_cache_csv_state_q,
+                    'prof_cache_plot_state_q': prof_cache_plot_state_q, 'prof_cache_params_state_q': prof_cache_params_state_q,
+                    'peak_diff_state_q': peak_diff_state_q,
                 }
                 create_radialprofile_callbacks(radialprofile_components)
                 
@@ -617,6 +640,46 @@ def build_ui():
                     }}
                     """,
                 )
+                
+                # Save settings to localStorage on change (Radial Profile tab)
+                def _persist_change_q(comp, key):
+                    """Auto-save setting to localStorage when changed."""
+                    comp.change(
+                        fn=None,
+                        inputs=[comp],
+                        outputs=[],
+                        js=f"""
+                        (v) => {{
+                            try {{
+                                const k = '{SETTINGS_KEY}';
+                                const raw = localStorage.getItem(k);
+                                const s = raw ? JSON.parse(raw) : {{}};
+                                s['{key}'] = v;
+                                localStorage.setItem(k, JSON.stringify(s));
+                            }} catch (e) {{
+                                console.warn('Failed to save setting {key}:', e);
+                            }}
+                        }}
+                        """,
+                    )
+                
+                for comp, key in [
+                    (seg_source_q, 'seg_source'), (seg_chan_q, 'seg_chan'), (diameter_q, 'diameter'), 
+                    (flow_th_q, 'flow_th'), (cellprob_th_q, 'cellprob_th'), (use_gpu_q, 'use_gpu'),
+                    (tgt_chan_q, 'tgt_chan'), (tgt_mask_mode_q, 'tgt_mask_mode'), (tgt_pct_q, 'tgt_pct'),
+                    (tgt_sat_limit_q, 'tgt_sat_limit'), (tgt_min_obj_q, 'tgt_min_obj'),
+                    (ref_chan_q, 'ref_chan'), (ref_mask_mode_q, 'ref_mask_mode'), (ref_pct_q, 'ref_pct'),
+                    (ref_sat_limit_q, 'ref_sat_limit'), (ref_min_obj_q, 'ref_min_obj'),
+                    (pp_bg_enable_q, 'pp_bg_enable'), (pp_bg_mode_q, 'pp_bg_mode'), 
+                    (pp_bg_radius_q, 'pp_bg_radius'), (pp_dark_pct_q, 'pp_dark_pct'),
+                    (pp_norm_enable_q, 'pp_norm_enable'), (pp_norm_method_q, 'pp_norm_method'),
+                    (prof_start_q, 'prof_start'), (prof_end_q, 'prof_end'), 
+                    (prof_window_size_q, 'prof_window_size'), (prof_window_step_q, 'prof_window_step'),
+                    (prof_smoothing_q, 'prof_smoothing'), (prof_show_err_q, 'prof_show_err'),
+                    (peak_min_pct_q, 'peak_min_pct'), (peak_max_pct_q, 'peak_max_pct'),
+                    (ratio_eps_q, 'ratio_eps'), (px_w_q, 'px_w'), (px_h_q, 'px_h'),
+                ]:
+                    _persist_change_q(comp, key)
         
         # ==================== Tab Switch Events: Reload Settings ====================
         # When switching to Step-by-Step tab, reload settings from localStorage
