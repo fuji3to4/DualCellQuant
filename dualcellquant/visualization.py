@@ -170,6 +170,7 @@ def plot_radial_profile_with_peaks(
     label_filter: int | str = "All",
     window_bins: int = 1,
     show_errorbars: bool = True,
+    show_ratio: bool = True,
     title_suffix: str = "",
 ) -> Image.Image:
     """
@@ -181,6 +182,7 @@ def plot_radial_profile_with_peaks(
         label_filter: "All" for pooled average, or specific label number for single-cell plot
         window_bins: Smoothing window size (1 = no smoothing)
         show_errorbars: Whether to show error bars (SEM)
+        show_ratio: Whether to show T/R ratio on secondary axis
         title_suffix: Optional text to append to plot title
     
     Returns:
@@ -354,17 +356,22 @@ def plot_radial_profile_with_peaks(
                         text_lines.append(f"  (≈{diff_um:.2f} μm)")
                     peak_annotation_text = "\n".join(text_lines)
     
-    ax2 = ax1.twinx()
-    if show_errorbars:
-        ax2.errorbar(x, ma_ratio, yerr=sem_ratio_arr, fmt='-s', ms=3, capsize=2, label="T/R", color="tab:green", alpha=0.9)
+    # Plot ratio on secondary axis if requested
+    if show_ratio:
+        ax2 = ax1.twinx()
+        if show_errorbars:
+            ax2.errorbar(x, ma_ratio, yerr=sem_ratio_arr, fmt='-s', ms=3, capsize=2, label="T/R", color="tab:green", alpha=0.9)
+        else:
+            ax2.plot(x, ma_ratio, label="T/R", color="tab:green", linestyle="--")
+        ax2.set_ylabel("Mean ratio (T/R)")
+        
+        # Combined legend - position at upper left to avoid peak markers
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left", fontsize=8)
     else:
-        ax2.plot(x, ma_ratio, label="T/R", color="tab:green", linestyle="--")
-    ax2.set_ylabel("Mean ratio (T/R)")
-    
-    # Combined legend - position at upper left to avoid peak markers
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left", fontsize=8)
+        # Legend for ax1 only
+        ax1.legend(loc="upper left", fontsize=8)
     
     # Add peak difference annotation after legend (so it appears on top)
     if peak_annotation_text is not None:

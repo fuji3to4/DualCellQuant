@@ -17,6 +17,7 @@ scikit-image = "^0.25.2"
 fastapi = "^0.116.1"
 uvicorn = {extras = ["standard"], version = "^0.35.0"}
 matplotlib = "^3.9.2"
+jupyter = "^1.1.1"
 
 
 
