@@ -107,6 +107,7 @@ def create_stepbystep_callbacks(components):
     prof_window_step = components['prof_window_step']
     prof_smoothing = components['prof_smoothing']
     prof_show_err = components['prof_show_err']
+    profile_show_ratio = components.get('profile_show_ratio')
     
     run_prof_btn = components['run_prof_btn']
     profile_table = components['profile_table']
@@ -163,7 +164,7 @@ def create_stepbystep_callbacks(components):
     )
     
     # Radial profile
-    def _radial_profile_cb(tgt_img, ref_img, masks, tchan, rchan, s, e, wsize, wstep, smoothing, show_err, bg_en, bg_mode, bg_r, dark_pct, nm_en, nm_m, man_t, man_r, eps):
+    def _radial_profile_cb(tgt_img, ref_img, masks, tchan, rchan, s, e, wsize, wstep, smoothing, show_err, show_ratio, bg_en, bg_mode, bg_r, dark_pct, nm_en, nm_m, man_t, man_r, eps):
         bgm = str(bg_mode)
         mt = float(man_t) if (bg_en and bgm == "manual") else None
         mr = float(man_r) if (bg_en and bgm == "manual") else None
@@ -182,6 +183,16 @@ def create_stepbystep_callbacks(components):
             manual_tar_bg=mt, manual_ref_bg=mr,
             window_bins=int(smoothing), show_errorbars=bool(show_err), ratio_ref_epsilon=float(eps),
         )
+        # Build grid (3 columns, variable rows) of all single-cell plots
+        try:
+            labs = np.unique(masks)
+            labs = labs[labs > 0]
+            label_list = [int(l) for l in labs]
+        except Exception:
+            label_list = []
+        grid_img = build_radial_profile_grid_image(
+            df_all, peak_df=None, window_bins=int(smoothing), show_errorbars=bool(show_err), show_ratio=bool(show_ratio), labels=label_list, cols=3, tile_width=700, title_suffix=""
+        )
         try:
             labs = np.unique(masks)
             labs = labs[labs > 0]
@@ -199,15 +210,15 @@ def create_stepbystep_callbacks(components):
             ratio_eps=float(eps),
             mask_shape=mshape, lab_count=lab_count, lab_max=lab_max,
         )
-        return df_all, csv_all, plot_img, df_all, csv_all, plot_img, params
+        return df_all, csv_all, grid_img, df_all, csv_all, grid_img, params
     
     run_prof_btn.click(
         fn=_radial_profile_cb,
-        inputs=[tgt, ref, masks_state, tgt_chan, ref_chan, prof_start, prof_end, prof_window_size, prof_window_step, prof_smoothing, prof_show_err, pp_bg_enable, pp_bg_mode, pp_bg_radius, pp_dark_pct, pp_norm_enable, pp_norm_method, bak_tar, bak_ref, ratio_eps],
+        inputs=[tgt, ref, masks_state, tgt_chan, ref_chan, prof_start, prof_end, prof_window_size, prof_window_step, prof_smoothing, prof_show_err, profile_show_ratio, pp_bg_enable, pp_bg_mode, pp_bg_radius, pp_dark_pct, pp_norm_enable, pp_norm_method, bak_tar, bak_ref, ratio_eps],
         outputs=[profile_table, profile_csv, profile_plot, prof_cache_df_state, prof_cache_csv_state, prof_cache_plot_state, prof_cache_params_state],
     )
     
-    def _radial_profile_single_or_all_cb(tgt_img, ref_img, masks, label_val, tchan, rchan, s, e, wsize, wstep, smoothing, show_err, bg_en, bg_mode, bg_r, dark_pct, nm_en, nm_m, man_t, man_r, eps, cache_df, cache_csv, cache_plot, cache_params, peak_df):
+    def _radial_profile_single_or_all_cb(tgt_img, ref_img, masks, label_val, tchan, rchan, s, e, wsize, wstep, smoothing, show_err, show_ratio, bg_en, bg_mode, bg_r, dark_pct, nm_en, nm_m, man_t, man_r, eps, cache_df, cache_csv, cache_plot, cache_params, peak_df):
         bgm = str(bg_mode)
         mt = float(man_t) if (bg_en and bgm == "manual") else None
         mr = float(man_r) if (bg_en and bgm == "manual") else None
@@ -234,12 +245,16 @@ def create_stepbystep_callbacks(components):
             except Exception:
                 return False
         if str(label_val) == "All":
-            def _build_all_plot_from_df(df_all_in: pd.DataFrame, window_bins_int: int, show_err_bool: bool, peak_df_in: pd.DataFrame = None):
-                return plot_radial_profile_with_peaks(df_all_in, peak_df_in, "All", window_bins_int, show_err_bool)
-
             if (cache_df is not None) and params_equal(cache_params, cur_params):
-                plot_img = _build_all_plot_from_df(cache_df, int(smoothing), bool(show_err), peak_df)
-                return cache_df, cache_csv, plot_img, cache_df, cache_csv, plot_img, cache_params
+                # Rebuild grid from cache
+                try:
+                    labs_now = np.unique(masks)
+                    labs_now = labs_now[labs_now > 0]
+                    label_list_now = [int(l) for l in labs_now]
+                except Exception:
+                    label_list_now = []
+                grid_img = build_radial_profile_grid_image(cache_df, peak_df, window_bins=int(smoothing), show_errorbars=bool(show_err), show_ratio=bool(show_ratio), labels=label_list_now, cols=3, tile_width=700)
+                return cache_df, cache_csv, grid_img, cache_df, cache_csv, grid_img, cache_params
             df_all, csv_all = radial_profile_all_cells(
                 tgt_img, ref_img, masks, tchan, rchan,
                 float(s), float(e), float(wsize), float(wstep),
@@ -247,8 +262,14 @@ def create_stepbystep_callbacks(components):
                 bg_mode=str(bg_mode), bg_dark_pct=float(dark_pct),
                 manual_tar_bg=mt, manual_ref_bg=mr, ratio_ref_epsilon=float(eps),
             )
-            plot_img = _build_all_plot_from_df(df_all, int(smoothing), bool(show_err), peak_df)
-            return df_all, csv_all, plot_img, df_all, csv_all, plot_img, cur_params
+            try:
+                labs_now = np.unique(masks)
+                labs_now = labs_now[labs_now > 0]
+                label_list_now = [int(l) for l in labs_now]
+            except Exception:
+                label_list_now = []
+            grid_img = build_radial_profile_grid_image(df_all, peak_df, window_bins=int(smoothing), show_errorbars=bool(show_err), show_ratio=bool(show_ratio), labels=label_list_now, cols=3, tile_width=700)
+            return df_all, csv_all, grid_img, df_all, csv_all, grid_img, cur_params
         else:
             try:
                 lab = int(str(label_val))
@@ -287,20 +308,22 @@ def create_stepbystep_callbacks(components):
                     manual_tar_bg=mt, manual_ref_bg=mr,
                     window_bins=int(smoothing), show_errorbars=bool(show_err), ratio_ref_epsilon=float(eps),
                 )
-                return df1, csv1, plot1, cache_df, cache_csv, cache_plot, cache_params
+                # For single label, still output a grid with one tile for consistency
+                grid_single = build_radial_profile_grid_image(df1, peak_df, window_bins=int(smoothing), show_errorbars=bool(show_err), show_ratio=bool(show_ratio), labels=[int(lab)], cols=3, tile_width=700)
+                return df1, csv1, grid_single, cache_df, cache_csv, cache_plot, cache_params
             tmp_csv = tempfile.NamedTemporaryFile(delete=False, suffix=f"_radial_profile_label_{lab}.csv")
             df1.to_csv(tmp_csv.name, index=False)
-            plot1 = plot_radial_profile_with_peaks(use_df, peak_df, lab, int(smoothing), bool(show_err))
-            return df1, tmp_csv.name, plot1, cache_df, cache_csv, cache_plot, cache_params
+            grid_single = build_radial_profile_grid_image(use_df, peak_df, window_bins=int(smoothing), show_errorbars=bool(show_err), show_ratio=bool(show_ratio), labels=[int(lab)], cols=3, tile_width=700)
+            return df1, tmp_csv.name, grid_single, cache_df, cache_csv, cache_plot, cache_params
     
     run_prof_single_btn.click(
         fn=_radial_profile_single_or_all_cb,
-        inputs=[tgt, ref, masks_state, prof_label, tgt_chan, ref_chan, prof_start, prof_end, prof_window_size, prof_window_step, prof_smoothing, prof_show_err, pp_bg_enable, pp_bg_mode, pp_bg_radius, pp_dark_pct, pp_norm_enable, pp_norm_method, bak_tar, bak_ref, ratio_eps, prof_cache_df_state, prof_cache_csv_state, prof_cache_plot_state, prof_cache_params_state, peak_diff_state],
+        inputs=[tgt, ref, masks_state, prof_label, tgt_chan, ref_chan, prof_start, prof_end, prof_window_size, prof_window_step, prof_smoothing, prof_show_err, profile_show_ratio, pp_bg_enable, pp_bg_mode, pp_bg_radius, pp_dark_pct, pp_norm_enable, pp_norm_method, bak_tar, bak_ref, ratio_eps, prof_cache_df_state, prof_cache_csv_state, prof_cache_plot_state, prof_cache_params_state, peak_diff_state],
         outputs=[profile_table, profile_csv, profile_plot, prof_cache_df_state, prof_cache_csv_state, prof_cache_plot_state, prof_cache_params_state],
     )
     
     # Peak difference
-    def _peak_diff_cb(cached_df, quant_df, min_pct, max_pct, label_val, smoothing, show_err):
+    def _peak_diff_cb(cached_df, quant_df, min_pct, max_pct, label_val, smoothing, show_err, show_ratio):
         if cached_df is None or cached_df.empty:
             return gr.update(value=pd.DataFrame()), None, gr.update(), None
         
@@ -314,18 +337,25 @@ def create_stepbystep_callbacks(components):
         tmp_csv_path = tmp_csv.name
         tmp_csv.close()
         
+        # Build grid reflecting peak markers
         try:
-            plot_img = plot_radial_profile_with_peaks(
-                cached_df, peak_df, label_val, int(smoothing), bool(show_err), title_suffix="(with peaks)"
-            )
+            if str(label_val) == "All":
+                # Build for all labels
+                labs = sorted(int(x) for x in cached_df["label"].dropna().unique())
+            else:
+                labs = [int(str(label_val))]
         except Exception:
-            plot_img = None
+            labs = []
+        try:
+            grid_img = build_radial_profile_grid_image(cached_df, peak_df, window_bins=int(smoothing), show_errorbars=bool(show_err), show_ratio=bool(show_ratio), labels=labs, cols=3, tile_width=700, title_suffix="(with peaks)")
+        except Exception:
+            grid_img = None
         
-        return peak_df, tmp_csv_path, plot_img, peak_df
+        return peak_df, tmp_csv_path, grid_img, peak_df
     
     run_peak_diff_btn.click(
         fn=_peak_diff_cb,
-        inputs=[prof_cache_df_state, quant_df_state, peak_min_pct, peak_max_pct, prof_label, prof_smoothing, prof_show_err],
+        inputs=[prof_cache_df_state, quant_df_state, peak_min_pct, peak_max_pct, prof_label, prof_smoothing, prof_show_err, profile_show_ratio],
         outputs=[peak_diff_table, peak_diff_csv, profile_plot, peak_diff_state],
     )
     

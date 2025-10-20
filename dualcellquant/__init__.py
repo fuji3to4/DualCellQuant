@@ -48,6 +48,8 @@ from .visualization import (
     save_bool_mask_tiff,
     save_label_tiff,
     plot_radial_profile_with_peaks,
+    save_radial_profile_grid_png,
+    build_radial_profile_grid_image,
 )
 
 # UI function
@@ -85,6 +87,8 @@ __all__ = [
     "save_bool_mask_tiff",
     "save_label_tiff",
     "plot_radial_profile_with_peaks",
+    "save_radial_profile_grid_png",
+    "build_radial_profile_grid_image",
     # UI
     "build_ui",
 ]

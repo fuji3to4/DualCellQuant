@@ -205,13 +205,14 @@ def build_ui():
                             profile_table = gr.Dataframe(label="Radial profile (all cells)", interactive=False, pinned_columns=1)
                             profile_csv = gr.File(label="Download radial profile CSV")
                             # Single-cell / All selector
-                            with gr.Row():
-                                with gr.Column():
-                                    prof_label = gr.Dropdown(choices=["All"], value="All", label="Label for single-cell profile", allow_custom_value=False)
-                                    prof_show_err = gr.Checkbox(value=True, label="Show error bars (SEM)")
-                                run_prof_single_btn = gr.Button("Changed label, update profile",)
+                            # with gr.Row():
+                            #     with gr.Column():
+                            #         prof_label = gr.Dropdown(choices=["All"], value="All", label="Label for single-cell profile", allow_custom_value=False)
+                            prof_show_err = gr.Checkbox(value=True, label="Show error bars (SEM)")
+                            profile_show_ratio = gr.Checkbox(value=True, label="Show T/R ratio curve")
+                            run_prof_single_btn = gr.Button("Changed label, update profile",)
                             
-                            profile_plot = gr.Image(type="pil", label="Radial profile plot", width=800)
+                            profile_plot = gr.Image(type="pil", label="Radial profile (3-col grid)", width=900)
                             
                             gr.Markdown("## 6. Radial Peak Difference Analysis")
                             # Peak difference section
@@ -258,6 +259,7 @@ def build_ui():
                     'radial_ratio_img': radial_ratio_img, 'radial_quant_df_state': radial_quant_df_state,
                     'prof_start': prof_start, 'prof_end': prof_end, 'prof_window_size': prof_window_size,
                     'prof_window_step': prof_window_step, 'prof_smoothing': prof_smoothing, 'prof_show_err': prof_show_err,
+                    'profile_show_ratio': profile_show_ratio,
                     'run_prof_btn': run_prof_btn, 'profile_table': profile_table, 'profile_csv': profile_csv,
                     'run_prof_single_btn': run_prof_single_btn, 'profile_plot': profile_plot,
                     'peak_min_pct': peak_min_pct, 'peak_max_pct': peak_max_pct,
@@ -278,7 +280,7 @@ def build_ui():
                         tgt_chan, tgt_mask_mode, tgt_sat_limit, tgt_pct, tgt_min_obj,
                         ref_chan, ref_mask_mode, ref_sat_limit, ref_pct, ref_min_obj,
                         px_w, px_h,
-                        prof_start, prof_end, prof_window_size, prof_window_step, prof_smoothing, prof_show_err,
+                        prof_start, prof_end, prof_window_size, prof_window_step, prof_smoothing, prof_show_err, profile_show_ratio,
                         ratio_eps,
                         label_scale,
                     ],
@@ -293,7 +295,7 @@ def build_ui():
                                 tgt_chan: 'gray', tgt_mask_mode: 'global_percentile', tgt_sat_limit: 254, tgt_pct: 75.0, tgt_min_obj: 50,
                                 ref_chan: 'gray', ref_mask_mode: 'global_percentile', ref_sat_limit: 254, ref_pct: 75.0, ref_min_obj: 50,
                                 px_w: 1.0, px_h: 1.0,
-                                prof_start: 0.0, prof_end: 150.0, prof_window_size: 10.0, prof_window_step: 5.0, prof_smoothing: 1, prof_show_err: true,
+                                prof_start: 0.0, prof_end: 150.0, prof_window_size: 10.0, prof_window_step: 5.0, prof_smoothing: 1, prof_show_err: true, profile_show_ratio: true,
                                 ratio_eps: 1e-6,
                                 label_scale: {float(LABEL_SCALE)},
                             }};
@@ -336,6 +338,7 @@ def build_ui():
                                 s.prof_window_step,
                                 s.prof_smoothing,
                                 s.prof_show_err,
+                                s.profile_show_ratio,
                                 s.ratio_eps,
                                 s.label_scale,
                             ];
@@ -348,7 +351,7 @@ def build_ui():
                                 'gray', 'global_percentile', 254, 75.0, 50,
                                 'gray', 'global_percentile', 254, 75.0, 50,
                                 1.0, 1.0,
-                                0.0, 150.0, 10.0, 5.0, 1, true,
+                                0.0, 150.0, 10.0, 5.0, 1, true, true,
                                 1e-6,
                                 {float(LABEL_SCALE)},
                             ];
@@ -384,7 +387,7 @@ def build_ui():
                     (tgt_chan, 'tgt_chan'), (tgt_mask_mode, 'tgt_mask_mode'), (tgt_sat_limit, 'tgt_sat_limit'), (tgt_pct, 'tgt_pct'), (tgt_min_obj, 'tgt_min_obj'),
                     (ref_chan, 'ref_chan'), (ref_mask_mode, 'ref_mask_mode'), (ref_sat_limit, 'ref_sat_limit'), (ref_pct, 'ref_pct'), (ref_min_obj, 'ref_min_obj'),
                     (px_w, 'px_w'), (px_h, 'px_h'), (label_scale, 'label_scale'),
-                    (prof_start, 'prof_start'), (prof_end, 'prof_end'), (prof_window_size, 'prof_window_size'), (prof_window_step, 'prof_window_step'), (prof_smoothing, 'prof_smoothing'), (prof_show_err, 'prof_show_err'),
+                    (prof_start, 'prof_start'), (prof_end, 'prof_end'), (prof_window_size, 'prof_window_size'), (prof_window_step, 'prof_window_step'), (prof_smoothing, 'prof_smoothing'), (prof_show_err, 'prof_show_err'), (profile_show_ratio, 'profile_show_ratio'),
                 ]:
                     _persist_change(comp, key)
 
@@ -407,7 +410,7 @@ def build_ui():
                         tgt_chan, tgt_mask_mode, tgt_sat_limit, tgt_pct, tgt_min_obj,
                         ref_chan, ref_mask_mode, ref_sat_limit, ref_pct, ref_min_obj,
                         px_w, px_h,
-                        prof_start, prof_end, prof_window_size, prof_window_step, prof_smoothing, prof_show_err,
+                        prof_start, prof_end, prof_window_size, prof_window_step, prof_smoothing, prof_show_err, profile_show_ratio,
                         label_scale,
                     ],
                     js=f"""
@@ -425,7 +428,7 @@ def build_ui():
                             'gray', 'none', 254, 75.0, 50,
                             'gray', 'none', 254, 75.0, 50,
                             1.0, 1.0,
-                            0.0, 150.0, 10.0, 5.0, 1, true,
+                            0.0, 150.0, 10.0, 5.0, 1, true, true,
                             {float(LABEL_SCALE)},
                         ];
                     }}
@@ -692,8 +695,8 @@ def build_ui():
                 ref_chan, ref_mask_mode, ref_pct, ref_sat_limit, ref_min_obj,
                 pp_bg_enable, pp_bg_mode, pp_bg_radius, pp_dark_pct,
                 pp_norm_enable, pp_norm_method,
-                prof_start, prof_end, prof_window_size, prof_window_step,
-                prof_smoothing, prof_show_err,
+                        prof_start, prof_end, prof_window_size, prof_window_step,
+                        prof_smoothing, prof_show_err, profile_show_ratio,
                 peak_min_pct, peak_max_pct,
                 ratio_eps, px_w, px_h,
             ],
@@ -708,7 +711,7 @@ def build_ui():
                         pp_bg_enable: false, pp_bg_mode: 'dark_subtract', pp_bg_radius: 50, pp_dark_pct: 5.0,
                         pp_norm_enable: false, pp_norm_method: 'min-max',
                         prof_start: 0.0, prof_end: 150.0, prof_window_size: 10.0, prof_window_step: 5.0,
-                        prof_smoothing: 1, prof_show_err: true,
+                                prof_smoothing: 1, prof_show_err: true, profile_show_ratio: true,
                         peak_min_pct: 60.0, peak_max_pct: 120.0,
                         ratio_eps: 1e-6, px_w: 1.0, px_h: 1.0,
                     }};
@@ -724,13 +727,13 @@ def build_ui():
                         s.pp_bg_enable, s.pp_bg_mode, s.pp_bg_radius, s.pp_dark_pct,
                         s.pp_norm_enable, s.pp_norm_method,
                         s.prof_start, s.prof_end, s.prof_window_size, s.prof_window_step,
-                        s.prof_smoothing, s.prof_show_err,
+                                s.prof_smoothing, s.prof_show_err, s.profile_show_ratio,
                         s.peak_min_pct, s.peak_max_pct,
                         s.ratio_eps, s.px_w, s.px_h,
                     ];
                 }} catch (e) {{
                     console.warn('Failed to reload settings on tab switch:', e);
-                    return Array(31).fill(null);
+                    return Array(32).fill(null);
                 }}
             }}
             """,

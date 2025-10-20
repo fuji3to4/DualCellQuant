@@ -26,6 +26,7 @@ import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import gradio as gr
 import tempfile
+import math
 from skimage import filters, morphology, measure, color, restoration
 import scipy.ndimage as ndi
 from cellpose import models
@@ -417,4 +418,167 @@ def _moving_average_nan(y: np.ndarray, window_bins: int) -> np.ndarray:
         if np.any(finite):
             out[i] = float(np.mean(win[finite]))
     return out
+
+
+def save_radial_profile_grid_png(
+    df: pd.DataFrame,
+    peak_df: pd.DataFrame | None = None,
+    *,
+    window_bins: int = 1,
+    show_errorbars: bool = True,
+    show_ratio: bool = True,
+    labels: list[int] | None = None,
+    cols: int = 3,
+    tile_width: int = 700,
+    title_suffix: str = "",
+) -> str:
+    """
+    Create a grid image (3 columns by variable rows) of per-cell radial profiles and save as PNG.
+
+    Args:
+        df: Radial profile DataFrame (contains column 'label').
+        peak_df: Optional peak-difference DataFrame to overlay peak markers.
+        window_bins: Smoothing bins passed to plot function.
+        show_errorbars: Whether to draw SEM bars.
+        labels: Specific label list to plot. If None, uses all labels in df (sorted).
+        cols: Number of columns in the grid (default 3).
+        tile_width: Resize width for each tile plot (keeps aspect ratio).
+        title_suffix: Optional suffix appended to each tile plot title.
+
+    Returns:
+        str: Temporary PNG file path containing the grid image.
+    """
+    if df is None or df.empty:
+        # Create a small placeholder image
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.text(0.5, 0.5, "No data to plot", ha="center", va="center", transform=ax.transAxes)
+        ax.axis("off")
+        buf = io.BytesIO()
+        fig.tight_layout()
+        fig.savefig(buf, format="png", dpi=150)
+        plt.close(fig)
+        buf.seek(0)
+        img = Image.open(buf).copy()
+        buf.close()
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix="_radial_profile_grid.png")
+        img.save(tmp.name)
+        return tmp.name
+
+    # Resolve labels to plot
+    if labels is None:
+        try:
+            labels = sorted(int(x) for x in pd.Series(df["label"].unique()).dropna().to_list())
+        except Exception:
+            labels = []
+
+    if len(labels) == 0:
+        # Same placeholder as above
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.text(0.5, 0.5, "No labels found", ha="center", va="center", transform=ax.transAxes)
+        ax.axis("off")
+        buf = io.BytesIO()
+        fig.tight_layout()
+        fig.savefig(buf, format="png", dpi=150)
+        plt.close(fig)
+        buf.seek(0)
+        img = Image.open(buf).copy()
+        buf.close()
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix="_radial_profile_grid.png")
+        img.save(tmp.name)
+        return tmp.name
+
+    # Build per-label images
+    tiles: list[Image.Image] = []
+    for lab in labels:
+        try:
+            im = plot_radial_profile_with_peaks(
+                df, peak_df, label_filter=int(lab), window_bins=int(window_bins),
+                show_errorbars=bool(show_errorbars), show_ratio=bool(show_ratio), title_suffix=title_suffix,
+            )
+        except Exception:
+            # Fallback blank tile on error
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.text(0.5, 0.5, f"Plot failed: {lab}", ha="center", va="center", transform=ax.transAxes)
+            ax.axis("off")
+            buf = io.BytesIO()
+            fig.tight_layout()
+            fig.savefig(buf, format="png", dpi=150)
+            plt.close(fig)
+            buf.seek(0)
+            im = Image.open(buf).copy()
+            buf.close()
+        # Resize tile to target width
+        if tile_width and im.width != tile_width:
+            scale = tile_width / float(im.width)
+            new_h = max(1, int(round(im.height * scale)))
+            im = im.resize((int(tile_width), int(new_h)), resample=Image.BICUBIC)
+        tiles.append(im)
+
+    if cols <= 0:
+        cols = 3
+    rows = int(math.ceil(len(tiles) / float(cols)))
+    tile_w = max((im.width for im in tiles), default=tile_width or 700)
+    tile_h = max((im.height for im in tiles), default=int(tile_width * 0.66) if tile_width else 500)
+
+    grid_w = cols * tile_w
+    grid_h = rows * tile_h
+    canvas = Image.new("RGB", (grid_w, grid_h), color=(255, 255, 255))
+
+    for idx, tile in enumerate(tiles):
+        r = idx // cols
+        c = idx % cols
+        x = c * tile_w
+        y = r * tile_h
+        # Center the tile in its cell
+        off_x = x + max(0, (tile_w - tile.width) // 2)
+        off_y = y + max(0, (tile_h - tile.height) // 2)
+        canvas.paste(tile, (off_x, off_y))
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix="_radial_profile_grid.png")
+    canvas.save(tmp.name)
+    return tmp.name
+
+
+def build_radial_profile_grid_image(
+    df: pd.DataFrame,
+    peak_df: pd.DataFrame | None = None,
+    *,
+    window_bins: int = 1,
+    show_errorbars: bool = True,
+    show_ratio: bool = True,
+    labels: list[int] | None = None,
+    cols: int = 3,
+    tile_width: int = 700,
+    title_suffix: str = "",
+) -> Image.Image:
+    """
+    Create a grid PIL Image of per-cell radial profiles (3 columns, variable rows).
+    """
+    # Reuse the PNG builder then load as PIL to avoid code duplication, but keep in-memory result.
+    path = save_radial_profile_grid_png(
+        df, peak_df,
+        window_bins=window_bins,
+        show_errorbars=show_errorbars,
+        show_ratio=show_ratio,
+        labels=labels,
+        cols=cols,
+        tile_width=tile_width,
+        title_suffix=title_suffix,
+    )
+    try:
+        img = Image.open(path).copy()
+        return img
+    except Exception:
+        # Fallback blank
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.text(0.5, 0.5, "Failed to build grid image", ha="center", va="center", transform=ax.transAxes)
+        ax.axis("off")
+        buf = io.BytesIO()
+        fig.tight_layout()
+        fig.savefig(buf, format="png", dpi=150)
+        plt.close(fig)
+        buf.seek(0)
+        img = Image.open(buf).copy()
+        buf.close()
+        return img
 
