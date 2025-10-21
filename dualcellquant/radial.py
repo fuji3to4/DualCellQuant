@@ -33,6 +33,7 @@ import io
 import matplotlib
 matplotlib.use("Agg", force=True)
 import matplotlib.pyplot as plt
+from scipy.signal import savgol_filter
 
 # -----------------------
 # Display/label settings (adjustable via UI)
@@ -680,6 +681,12 @@ def compute_radial_peak_difference(
     max_pct: float = 120.0,
     *,
     algo: str = "global_max",
+    sg_window: int = 5,
+    sg_poly: int = 2,
+    shoulder_slope_tol: float = 0.005,
+    shoulder_curv_tol: float = 0.001,
+    shoulder_plateau_span: int = 2,
+    shoulder_plateau_tol: float = 0.02,
 ) -> pd.DataFrame:
     """
     Compute for each label the center_pct where mean_target and mean_reference reach maximum
@@ -701,7 +708,8 @@ def compute_radial_peak_difference(
         return pd.DataFrame(columns=[
             "label", "max_target_center_pct", "max_reference_center_pct", "difference_pct",
             "max_target_px", "max_reference_px", "difference_px",
-            "max_target_um", "max_reference_um", "difference_um"
+            "max_target_um", "max_reference_um", "difference_um",
+            "max_target_intensity", "max_reference_intensity",
         ])
     
     # Filter by range
@@ -714,7 +722,8 @@ def compute_radial_peak_difference(
         return pd.DataFrame(columns=[
             "label", "max_target_center_pct", "max_reference_center_pct", "difference_pct",
             "max_target_px", "max_reference_px", "difference_px",
-            "max_target_um", "max_reference_um", "difference_um"
+            "max_target_um", "max_reference_um", "difference_um",
+            "max_target_intensity", "max_reference_intensity",
         ])
     
     # Build lookup for equivalent radius per label
@@ -778,6 +787,67 @@ def compute_radial_peak_difference(
 
     algo_s = str(algo or "global_max").lower()
 
+    # --- Savitzky–Golay support and shoulder detection helpers ---
+    def _prep_series_sorted(series_center_pct: pd.Series, series_value: pd.Series):
+        dfv = pd.DataFrame({
+            'center_pct': series_center_pct.to_numpy(dtype=float),
+            'val': series_value.to_numpy(dtype=float),
+        }).dropna(subset=['center_pct', 'val']).sort_values('center_pct')
+        if dfv.empty:
+            return None, None
+        return dfv['center_pct'].to_numpy(), dfv['val'].to_numpy()
+
+    def _savgol_nan_safe(y: np.ndarray, win: int, poly: int) -> np.ndarray:
+        y = y.astype(float)
+        n = y.size
+        if n < 3:
+            return y
+        # window is odd and <= n
+        win = max(3, min(win, n if n % 2 == 1 else n - 1))
+        if win % 2 == 0:
+            win -= 1
+        if win <= poly:
+            poly = max(1, min(poly, win - 1))
+        m = np.isfinite(y)
+        if m.sum() < 2:
+            return y
+        y_fill = y.copy()
+        y_fill[~m] = np.interp(np.flatnonzero(~m), np.flatnonzero(m), y[m])
+        ys = savgol_filter(y_fill, window_length=win, polyorder=poly, mode="interp")
+        return ys
+
+    def _first_shoulder(series_center_pct: pd.Series, series_value: pd.Series) -> float:
+        cp, v = _prep_series_sorted(series_center_pct, series_value)
+        if cp is None:
+            return np.nan
+        n = v.size
+        if n < 5:
+            return _first_local_top(series_center_pct, series_value)
+        # light smoothing
+        v_s = _savgol_nan_safe(v, win=int(sg_window) if n >= int(sg_window) else 3, poly=int(sg_poly))
+        # normalize for relative thresholds
+        v_min, v_max = float(np.nanmin(v_s)), float(np.nanmax(v_s))
+        rng = max(1e-12, v_max - v_min)
+        v_n = (v_s - v_min) / rng
+        dv = np.gradient(v_n, cp)
+        d2 = np.gradient(dv, cp)
+        slope_tol = float(shoulder_slope_tol)
+        curv_tol = float(shoulder_curv_tol)
+        plateau_span = int(shoulder_plateau_span)
+        plateau_tol = float(shoulder_plateau_tol)
+        # scan from right (highest %) to left
+        for i in range(n - 2, 0, -1):
+            if dv[i - 1] > slope_tol and abs(dv[i]) <= slope_tol and d2[i] < -curv_tol:
+                return float(cp[i])
+        # plateau assistant
+        for i in range(n - 2, 0, -1):
+            j2 = min(n - 1, i + plateau_span)
+            if dv[i - 1] > slope_tol:
+                window = v_n[i:j2 + 1]
+                if window.size >= 2 and (np.nanmax(window) - np.nanmin(window)) <= plateau_tol:
+                    return float(cp[i])
+        return _first_local_top(series_center_pct, series_value)
+
     for lab in labels:
         lab_data = df_filtered[df_filtered["label"] == lab]
         
@@ -785,6 +855,9 @@ def compute_radial_peak_difference(
             # First local maximum scanning from upper bound to lower bound
             max_target_pct = _first_local_top(lab_data["center_pct"], lab_data["mean_target"])
             max_reference_pct = _first_local_top(lab_data["center_pct"], lab_data["mean_reference"])
+        elif algo_s == "first_shoulder":
+            max_target_pct = _first_shoulder(lab_data["center_pct"], lab_data["mean_target"])
+            max_reference_pct = _first_shoulder(lab_data["center_pct"], lab_data["mean_reference"])
         else:
             # Global maximum within range (current behavior)
             valid_target = lab_data.dropna(subset=["mean_target"])
@@ -800,6 +873,24 @@ def compute_radial_peak_difference(
             else:
                 max_reference_pct = np.nan
         
+        # Get intensities at peaks
+        def _get_intensity(df_lab: pd.DataFrame, pct: float, col: str) -> float:
+            try:
+                if not np.isfinite(pct):
+                    return np.nan
+                row = df_lab.loc[df_lab["center_pct"] == pct]
+                if row.empty:
+                    # fallback: nearest center_pct within small tolerance
+                    diffs = np.abs(df_lab["center_pct"].to_numpy(dtype=float) - float(pct))
+                    j = int(np.nanargmin(diffs)) if diffs.size else None
+                    return float(df_lab.iloc[j][col]) if j is not None else np.nan
+                return float(row.iloc[0][col])
+            except Exception:
+                return np.nan
+
+        max_target_intensity = _get_intensity(lab_data, max_target_pct, "mean_target")
+        max_reference_intensity = _get_intensity(lab_data, max_reference_pct, "mean_reference")
+
         # Calculate difference in %
         if np.isfinite(max_target_pct) and np.isfinite(max_reference_pct):
             diff_pct = max_target_pct - max_reference_pct
@@ -839,6 +930,8 @@ def compute_radial_peak_difference(
             "max_target_um": max_target_um,
             "max_reference_um": max_reference_um,
             "difference_um": diff_um,
+            "max_target_intensity": max_target_intensity,
+            "max_reference_intensity": max_reference_intensity,
         })
     
     return pd.DataFrame(results).sort_values("label")

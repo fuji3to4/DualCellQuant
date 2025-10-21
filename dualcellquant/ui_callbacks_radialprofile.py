@@ -111,6 +111,7 @@ def create_radialprofile_callbacks(components):
                 None, None, None,  # profile table, csv, plot
                 None, None,         # quant table, csv
                 None, None,         # integrate overlays
+                None, None,         # bak_tar_q, bak_ref_q
                 None, None,         # masks_state, quant_df_state
                 None, None, None,   # prof_cache_df_state, csv_state, plot_state
                 None,               # prof_cache_params_state
@@ -127,6 +128,7 @@ def create_radialprofile_callbacks(components):
                 None, None, None,  # profile table, csv, plot
                 None, None,         # quant table, csv
                 None, None,         # integrate overlays
+                None, None,         # bak_tar_q, bak_ref_q
                 None, None,         # masks_state, quant_df_state
                 None, None, None,   # prof_cache_df_state, csv_state, plot_state
                 None,               # prof_cache_params_state
@@ -139,13 +141,13 @@ def create_radialprofile_callbacks(components):
             progress[-1] = "✅ Step 1/5: Segmentation complete"
             yield (
                 "\n".join(progress),
-                None, None, None,
-                None, None,
-                None, None,
-                None, None,
-                None, None, None,
-                None,
-                None
+                None, None, None,   # profile (table,csv,plot)
+                None, None,         # quant (table,csv)
+                None, None,         # overlays (tar,ref)
+                None, None,         # bak_tar, bak_ref
+                None, None,         # masks_state, quant_df_state
+                None, None, None, None,  # prof_cache df,csv,plot,params
+                None                # peak_diff_state
             )
             
             # Count labels (no dropdown in this tab)
@@ -160,12 +162,12 @@ def create_radialprofile_callbacks(components):
             progress.append("🔄 Step 2/5: Applying target and reference masks...")
             yield (
                 "\n".join(progress),
-                None, None, None,
-                None, None,
-                None, None,
-                None, None,
-                None, None, None,
-                None,
+                None, None, None,   # profile
+                None, None,         # quant
+                None, None,         # overlays
+                None, None,         # bak values
+                None, None,         # masks_state, quant_df_state
+                None, None, None, None,  # prof_cache df,csv,plot,params
                 None
             )
             
@@ -181,6 +183,7 @@ def create_radialprofile_callbacks(components):
                 None, None, None,  # profile table, csv, plot
                 None, None,         # quant table, csv
                 None, None,         # integrate overlays
+                None, None,         # bak_tar_q, bak_ref_q
                 None, None,         # masks_state, quant_df_state
                 None, None, None,   # prof_cache_* states
                 None,               # prof_cache_params_state
@@ -191,16 +194,28 @@ def create_radialprofile_callbacks(components):
             progress.append("🔄 Step 3/5: Integrating and quantifying...")
             yield (
                 "\n".join(progress),
-                None, None, None,
-                None, None,
-                None, None,
-                None, None,
-                None, None, None,
-                None,
+                None, None, None,   # profile
+                None, None,         # quant
+                None, None,         # overlays
+                None, None,         # bak values
+                None, None,         # masks_state, quant_df_state
+                None, None, None, None,  # prof_cache df,csv,plot,params
                 None
             )
             
             bgm = str(bg_mode)
+            # UX parity with Step-by-Step: compute display BG values when dark_subtract
+            out_tar_bg = bg_t
+            out_ref_bg = bg_r
+            if bool(bg_en) and bgm == "dark_subtract":
+                try:
+                    out_tar_bg = compute_dark_background(tgt_img, t_ch, float(dark_pct), use_native_scale=True)
+                except Exception:
+                    out_tar_bg = bg_t
+                try:
+                    out_ref_bg = compute_dark_background(ref_img, r_ch, float(dark_pct), use_native_scale=True)
+                except Exception:
+                    out_ref_bg = bg_r
             mt = float(bg_t) if (bg_en and bgm == "manual") else None
             mr = float(bg_r) if (bg_en and bgm == "manual") else None
             
@@ -219,6 +234,7 @@ def create_radialprofile_callbacks(components):
                 None, None, None,      # profile table, csv, plot (not ready yet)
                 quant_df, quant_csv,    # quant outputs
                 integrate_tar_ov, integrate_ref_ov,  # overlays
+                out_tar_bg, out_ref_bg, # BG values for display
                 None, None,             # masks_state, quant_df_state
                 None, None, None,       # prof_cache_* (not set yet)
                 None,                   # cache params
@@ -232,6 +248,7 @@ def create_radialprofile_callbacks(components):
                 None, None, None,
                 quant_df, quant_csv,
                 integrate_tar_ov, integrate_ref_ov,
+                out_tar_bg, out_ref_bg,
                 None, None,
                 None, None, None,
                 None,
@@ -291,7 +308,17 @@ def create_radialprofile_callbacks(components):
                 df_all, peak_df=None, window_bins=int(p_smooth), show_errorbars=bool(p_err), show_ratio=bool(p_show_ratio), labels=label_list, cols=3, tile_width=700
             )
             progress[-1] = "✅ Step 4/5: Radial profile analysis complete"
-            yield ("\n".join(progress), df_all, csv_all, grid_img, quant_df, quant_csv, integrate_tar_ov, integrate_ref_ov, None, None, df_all, csv_all, grid_img, cache_params, None)
+            yield (
+                "\n".join(progress),
+                df_all, csv_all, grid_img,
+                quant_df, quant_csv,
+                integrate_tar_ov, integrate_ref_ov,
+                out_tar_bg, out_ref_bg,
+                None, None,
+                df_all, csv_all, grid_img,
+                cache_params,
+                None
+            )
             
             # Step 6 is manual (peak analysis button)
             progress.append(f"✅ Step 5/5: Analysis complete! Found {lab_count} cells.")
@@ -302,6 +329,7 @@ def create_radialprofile_callbacks(components):
                 df_all, csv_all, grid_img,   # profile outputs
                 quant_df, quant_csv,          # quant outputs
                 integrate_tar_ov, integrate_ref_ov,  # overlays
+                out_tar_bg, out_ref_bg,       # BG values for display
                 masks, quant_df,              # states: masks_state, quant_df_state
                 df_all, csv_all, grid_img,    # prof_cache_* states
                 cache_params,                 # prof_cache_params_state
@@ -313,12 +341,12 @@ def create_radialprofile_callbacks(components):
             progress.append(error_msg)
             yield (
                 "\n".join(progress),
-                None, None, None,
-                None, None,
-                None, None,
-                None, None,
-                None, None, None,
-                None,
+                None, None, None,   # profile
+                None, None,         # quant
+                None, None,         # overlays
+                None, None,         # bak values
+                None, None,         # masks_state, quant_df_state
+                None, None, None, None,  # prof_cache df,csv,plot,params
                 None
             )
     
@@ -338,6 +366,7 @@ def create_radialprofile_callbacks(components):
             profile_table_q, profile_csv_q, profile_plot_q,
             quant_table_q, quant_csv_q,
             integrate_tar_overlay, integrate_ref_overlay,
+            bak_tar_q, bak_ref_q,
             masks_state, quant_df_state,
             prof_cache_df_state_q, prof_cache_csv_state_q, prof_cache_plot_state_q, prof_cache_params_state_q, peak_diff_state_q
         ],
@@ -470,6 +499,22 @@ def create_radialprofile_callbacks(components):
     
     run_peak_diff_btn_q.click(
         fn=_compute_peaks,
-        inputs=[prof_cache_df_state_q, quant_df_state, peak_min_pct_q, peak_max_pct_q, prof_smoothing_q, prof_show_err_q, profile_show_ratio_q, peak_algo_q],
+    inputs=[prof_cache_df_state_q, quant_df_state, peak_min_pct_q, peak_max_pct_q, prof_smoothing_q, prof_show_err_q, profile_show_ratio_q, peak_algo_q],
         outputs=[peak_diff_table_q, peak_diff_csv_q, profile_plot_q, peak_diff_state_q],
+    )
+
+    # Toggle BG control visibility based on mode (parity with Step-by-Step)
+    def _pp_bg_mode_changed_q(mode: str):
+        m = (mode or "rolling").lower()
+        return (
+            gr.update(visible=(m == "rolling")),
+            gr.update(visible=(m == "dark_subtract")),
+            gr.update(visible=(m in ("manual", "dark_subtract"))),
+            gr.update(visible=(m in ("manual", "dark_subtract"))),
+        )
+
+    pp_bg_mode_q.change(
+        fn=_pp_bg_mode_changed_q,
+        inputs=[pp_bg_mode_q],
+        outputs=[pp_bg_radius_q, pp_dark_pct_q, bak_tar_q, bak_ref_q],
     )

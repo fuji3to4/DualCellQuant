@@ -563,6 +563,7 @@ def build_ui():
                                     "global_max",
                                     "first_local_top",
                                 ], value="global_max", label="Peak algorithm")
+                            
 
 
                             run_peak_diff_btn_q = gr.Button("Compute Peak Differences")
