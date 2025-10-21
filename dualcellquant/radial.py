@@ -678,6 +678,8 @@ def compute_radial_peak_difference(
     quant_df: pd.DataFrame = None,
     min_pct: float = 60.0,
     max_pct: float = 120.0,
+    *,
+    algo: str = "global_max",
 ) -> pd.DataFrame:
     """
     Compute for each label the center_pct where mean_target and mean_reference reach maximum
@@ -743,24 +745,60 @@ def compute_radial_peak_difference(
     labels = df_filtered["label"].unique()
     results = []
     
+    def _first_local_top(series_center_pct: pd.Series, series_value: pd.Series) -> float:
+        """
+        Find the first local maximum when scanning from highest center_pct to lowest within range.
+        If no local maximum is found, fall back to global maximum index.
+        Returns the center_pct of the selected peak, or NaN if unavailable.
+        """
+        try:
+            # Ensure sorted by center_pct ascending for consistent neighbor logic
+            dfv = pd.DataFrame({
+                'center_pct': series_center_pct.to_numpy(dtype=float),
+                'val': series_value.to_numpy(dtype=float),
+            }).dropna(subset=['center_pct', 'val']).sort_values('center_pct')
+            if dfv.empty:
+                return np.nan
+            cp = dfv['center_pct'].to_numpy()
+            v = dfv['val'].to_numpy()
+            n = v.size
+            # scan from right (highest %) to left, ignore endpoints for proper local maximum
+            for i in range(n - 2, 0, -1):
+                left = v[i - 1]
+                right = v[i + 1]
+                if np.isfinite(v[i]) and np.isfinite(left) and np.isfinite(right):
+                    # local top (allow plateau peak as >= neighbors)
+                    if v[i] >= left and v[i] >= right:
+                        return float(cp[i])
+            # fallback to global max
+            j = int(np.nanargmax(v)) if np.any(np.isfinite(v)) else None
+            return float(cp[j]) if j is not None else np.nan
+        except Exception:
+            return np.nan
+
+    algo_s = str(algo or "global_max").lower()
+
     for lab in labels:
         lab_data = df_filtered[df_filtered["label"] == lab]
         
-        # Find center_pct where mean_target is maximum
-        valid_target = lab_data.dropna(subset=["mean_target"])
-        if not valid_target.empty:
-            max_target_idx = valid_target["mean_target"].idxmax()
-            max_target_pct = valid_target.loc[max_target_idx, "center_pct"]
+        if algo_s == "first_local_top":
+            # First local maximum scanning from upper bound to lower bound
+            max_target_pct = _first_local_top(lab_data["center_pct"], lab_data["mean_target"])
+            max_reference_pct = _first_local_top(lab_data["center_pct"], lab_data["mean_reference"])
         else:
-            max_target_pct = np.nan
-        
-        # Find center_pct where mean_reference is maximum
-        valid_reference = lab_data.dropna(subset=["mean_reference"])
-        if not valid_reference.empty:
-            max_reference_idx = valid_reference["mean_reference"].idxmax()
-            max_reference_pct = valid_reference.loc[max_reference_idx, "center_pct"]
-        else:
-            max_reference_pct = np.nan
+            # Global maximum within range (current behavior)
+            valid_target = lab_data.dropna(subset=["mean_target"])
+            if not valid_target.empty:
+                max_target_idx = valid_target["mean_target"].idxmax()
+                max_target_pct = valid_target.loc[max_target_idx, "center_pct"]
+            else:
+                max_target_pct = np.nan
+            valid_reference = lab_data.dropna(subset=["mean_reference"])
+            if not valid_reference.empty:
+                max_reference_idx = valid_reference["mean_reference"].idxmax()
+                max_reference_pct = valid_reference.loc[max_reference_idx, "center_pct"]
+            else:
+                max_reference_pct = np.nan
         
         # Calculate difference in %
         if np.isfinite(max_target_pct) and np.isfinite(max_reference_pct):
