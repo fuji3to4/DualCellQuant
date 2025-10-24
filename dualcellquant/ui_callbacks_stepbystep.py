@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 
 from dualcellquant import *
+import dualcellquant as dcq
 
 
 def create_stepbystep_callbacks(components):
@@ -433,9 +434,9 @@ def create_stepbystep_callbacks(components):
     )
 
     def _set_label_scale(v: float):
-        global LABEL_SCALE
+        # Propagate to package-level so visualization uses the latest value
         try:
-            LABEL_SCALE = float(v)
+            dcq.LABEL_SCALE = float(v)
         except Exception:
             pass
         return None

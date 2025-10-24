@@ -16,6 +16,7 @@ import numpy as np
 from dualcellquant import *
 from dualcellquant.ui_callbacks_stepbystep import create_stepbystep_callbacks
 from dualcellquant.ui_callbacks_radialprofile import create_radialprofile_callbacks
+import dualcellquant as dcq
 
 # localStorage key for settings persistence
 SETTINGS_KEY = "dcq_settings_v1"
@@ -73,6 +74,8 @@ def build_ui():
                         with gr.Accordion("Settings", open=False):
                             reset_settings = gr.Button("Reset Settings",scale=1)
                             label_scale = gr.Slider(0.0, 5.0, value=float(LABEL_SCALE), step=0.1, label="Label size scale (0=hidden)")
+                            # hidden state used to pass JS-initialized value into Python on load
+                            label_scale_init_state = gr.State()
                         gr.Markdown("## 1. Run Cellpose-SAM Segmentation")
                         with gr.Accordion("Segmentation params", open=True):
                             seg_source = gr.Radio(["target","reference"], value="target", label="Segment on")
@@ -403,13 +406,32 @@ def build_ui():
                     _persist_change(comp, key)
 
                 def _set_label_scale(v: float):
-                    global LABEL_SCALE
+                    # Update package-level LABEL_SCALE so visualization uses the latest value
                     try:
-                        LABEL_SCALE = float(v)
+                        dcq.LABEL_SCALE = float(v)
                     except Exception:
                         pass
                     return None
                 label_scale.change(fn=_set_label_scale, inputs=[label_scale], outputs=[])
+
+                # Initialize package-level value from saved settings on page load
+                demo.load(
+                    fn=_set_label_scale,
+                    inputs=[label_scale_init_state],
+                    outputs=[],
+                    js=f"""
+                    () => {{
+                        try {{
+                            const raw = localStorage.getItem('{SETTINGS_KEY}');
+                            if (raw) {{
+                                const s = JSON.parse(raw);
+                                if (s && typeof s.label_scale !== 'undefined') return s.label_scale;
+                            }}
+                        }} catch (e) {{}}
+                        return {float(LABEL_SCALE)};
+                    }}
+                    """,
+                )
 
                 reset_settings.click(
                     fn=None,

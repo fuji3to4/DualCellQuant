@@ -34,11 +34,14 @@ import io
 import matplotlib
 matplotlib.use("Agg", force=True)
 import matplotlib.pyplot as plt
+import dualcellquant as dcq
 
 # -----------------------
-# Display/label settings (adjustable via UI)
+# Display/label settings
+# Note: Use the package-level setting (dcq.LABEL_SCALE) so UI updates apply globally
 # -----------------------
-LABEL_SCALE: float = 1.8
+# Keep a fallback default only; actual value is read dynamically from the package.
+_LABEL_SCALE_FALLBACK: float = 1.8
 
 
 
@@ -92,14 +95,19 @@ def vivid_label_image(masks: np.ndarray) -> Image.Image:
 
 def annotate_ids(img: Image.Image, masks: np.ndarray) -> Image.Image:
     try:
-        if float(LABEL_SCALE) <= 0.0:
+        ls = float(getattr(dcq, "LABEL_SCALE", _LABEL_SCALE_FALLBACK))
+        if ls <= 0.0:
             return img
     except Exception:
         pass
     draw = ImageDraw.Draw(img)
     w, h = img.size
     base = max(14, int(min(w, h) * 0.035))
-    fsize = max(12, int(base * float(LABEL_SCALE)))
+    try:
+        ls = float(getattr(dcq, "LABEL_SCALE", _LABEL_SCALE_FALLBACK))
+    except Exception:
+        ls = _LABEL_SCALE_FALLBACK
+    fsize = max(12, int(base * ls))
     font = _load_font(fsize)
     props = measure.regionprops(masks)
     for p in props:
