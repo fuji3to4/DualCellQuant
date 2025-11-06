@@ -78,8 +78,10 @@ def create_radialprofile_callbacks(components):
     
     run_prof_single_btn_q = components['run_prof_single_btn_q']
     profile_plot_q = components['profile_plot_q']
-    profile_table_q = components['profile_table_q']
+    profile_table_q_raw = components['profile_table_q_raw']
+    profile_table_q_sg = components['profile_table_q_sg']
     profile_csv_q = components['profile_csv_q']
+    profile_csv_q_sg = components['profile_csv_q_sg']
     
     run_peak_diff_btn_q = components['run_peak_diff_btn_q']
     peak_diff_table_q = components['peak_diff_table_q']
@@ -103,12 +105,12 @@ def create_radialprofile_callbacks(components):
                           r_ch, r_mode, r_pct, r_sat, r_min,
                           bg_en, bg_mode, bg_rad, dark_pct, bg_t, bg_r, nm_en, nm_m,
                           p_start, p_end, p_win, p_step, p_smooth, p_err, p_show_ratio,
-                          eps, pw, ph):
+                          eps, pw, ph, sg_w, sg_p):
         """Run steps 1→2→3→5→6 in sequence."""
         if tgt_img is None or ref_img is None:
             return (
                 "❌ Please upload both target and reference images.",
-                None, None, None,  # profile table, csv, plot
+                None, None, None, None,  # profile tables RAW/SG, csvs (RAW/SG), plot
                 None, None,         # quant table, csv
                 None, None,         # integrate overlays
                 None, None,         # bak_tar_q, bak_ref_q
@@ -125,13 +127,12 @@ def create_radialprofile_callbacks(components):
             progress.append("🔄 Step 1/5: Running Cellpose segmentation...")
             yield (
                 "\n".join(progress),
-                None, None, None,  # profile table, csv, plot
+                None, None, None, None, None,  # profile: RAW tbl, RAW csv, SG tbl, SG csv, plot
                 None, None,         # quant table, csv
                 None, None,         # integrate overlays
                 None, None,         # bak_tar_q, bak_ref_q
                 None, None,         # masks_state, quant_df_state
-                None, None, None,   # prof_cache_df_state, csv_state, plot_state
-                None,               # prof_cache_params_state
+                None, None, None, None,  # prof_cache df,csv,plot,params
                 None                # peak_diff_state
             )
             
@@ -141,13 +142,13 @@ def create_radialprofile_callbacks(components):
             progress[-1] = "✅ Step 1/5: Segmentation complete"
             yield (
                 "\n".join(progress),
-                None, None, None,   # profile (table,csv,plot)
-                None, None,         # quant (table,csv)
-                None, None,         # overlays (tar,ref)
-                None, None,         # bak_tar, bak_ref
-                None, None,         # masks_state, quant_df_state
-                None, None, None, None,  # prof_cache df,csv,plot,params
-                None                # peak_diff_state
+                None, None, None, None, None,
+                None, None,
+                None, None,
+                None, None,
+                None, None,
+                None, None, None, None,
+                None
             )
             
             # Count labels (no dropdown in this tab)
@@ -162,12 +163,12 @@ def create_radialprofile_callbacks(components):
             progress.append("🔄 Step 2/5: Applying target and reference masks...")
             yield (
                 "\n".join(progress),
-                None, None, None,   # profile
-                None, None,         # quant
-                None, None,         # overlays
-                None, None,         # bak values
-                None, None,         # masks_state, quant_df_state
-                None, None, None, None,  # prof_cache df,csv,plot,params
+                None, None, None, None, None,
+                None, None,
+                None, None,
+                None, None,
+                None, None,
+                None, None, None, None,
                 None
             )
             
@@ -180,26 +181,25 @@ def create_radialprofile_callbacks(components):
             progress[-1] = "✅ Step 2/5: Masks applied"
             yield (
                 "\n".join(progress),
-                None, None, None,  # profile table, csv, plot
-                None, None,         # quant table, csv
-                None, None,         # integrate overlays
-                None, None,         # bak_tar_q, bak_ref_q
-                None, None,         # masks_state, quant_df_state
-                None, None, None,   # prof_cache_* states
-                None,               # prof_cache_params_state
-                None                # peak_diff_state
+                None, None, None, None, None,
+                None, None,
+                None, None,
+                None, None,
+                None, None,
+                None, None, None, None,
+                None
             )
             
             # Step 3: Integrate & Quantify (without radial mask - step 4 is skipped)
             progress.append("🔄 Step 3/5: Integrating and quantifying...")
             yield (
                 "\n".join(progress),
-                None, None, None,   # profile
-                None, None,         # quant
-                None, None,         # overlays
-                None, None,         # bak values
-                None, None,         # masks_state, quant_df_state
-                None, None, None, None,  # prof_cache df,csv,plot,params
+                None, None, None, None, None,
+                None, None,
+                None, None,
+                None, None,
+                None, None,
+                None, None, None, None,
                 None
             )
             
@@ -231,27 +231,25 @@ def create_radialprofile_callbacks(components):
             progress[-1] = "✅ Step 3/5: Quantification complete"
             yield (
                 "\n".join(progress),
-                None, None, None,      # profile table, csv, plot (not ready yet)
-                quant_df, quant_csv,    # quant outputs
-                integrate_tar_ov, integrate_ref_ov,  # overlays
-                out_tar_bg, out_ref_bg, # BG values for display
-                None, None,             # masks_state, quant_df_state
-                None, None, None,       # prof_cache_* (not set yet)
-                None,                   # cache params
-                None                    # peak_diff_state
+                None, None, None, None, None,
+                quant_df, quant_csv,
+                integrate_tar_ov, integrate_ref_ov,
+                out_tar_bg, out_ref_bg,
+                None, None,
+                None, None, None, None,
+                None
             )
             
             # Step 5: Radial Profile
             progress.append("🔄 Step 4/5: Computing radial intensity profiles...")
             yield (
                 "\n".join(progress),
-                None, None, None,
+                None, None, None, None, None,
                 quant_df, quant_csv,
                 integrate_tar_ov, integrate_ref_ov,
                 out_tar_bg, out_ref_bg,
                 None, None,
-                None, None, None,
-                None,
+                None, None, None, None,
                 None
             )
             
@@ -304,19 +302,19 @@ def create_radialprofile_callbacks(components):
                 label_list = [int(l) for l in labs]
             except Exception:
                 label_list = []
+            # Initial grid should be RAW (no SG); force sg_window=1
             grid_img = build_radial_profile_grid_image(
-                df_all, peak_df=None, window_bins=int(p_smooth), show_errorbars=bool(p_err), show_ratio=bool(p_show_ratio), labels=label_list, cols=3, tile_width=700
+                df_all, peak_df=None, window_bins=int(p_smooth), sg_window=1, sg_poly=int(sg_p), show_errorbars=bool(p_err), show_ratio=bool(p_show_ratio), labels=label_list, cols=3, tile_width=700
             )
             progress[-1] = "✅ Step 4/5: Radial profile analysis complete"
             yield (
                 "\n".join(progress),
-                df_all, csv_all, grid_img,
+                df_all, csv_all, None, None, grid_img,
                 quant_df, quant_csv,
                 integrate_tar_ov, integrate_ref_ov,
                 out_tar_bg, out_ref_bg,
                 None, None,
-                df_all, csv_all, grid_img,
-                cache_params,
+                df_all, csv_all, grid_img, cache_params,
                 None
             )
             
@@ -326,14 +324,13 @@ def create_radialprofile_callbacks(components):
             
             yield (
                 "\n".join(progress),
-                df_all, csv_all, grid_img,   # profile outputs
-                quant_df, quant_csv,          # quant outputs
-                integrate_tar_ov, integrate_ref_ov,  # overlays
-                out_tar_bg, out_ref_bg,       # BG values for display
-                masks, quant_df,              # states: masks_state, quant_df_state
-                df_all, csv_all, grid_img,    # prof_cache_* states
-                cache_params,                 # prof_cache_params_state
-                None                          # peak_diff_state
+                df_all, csv_all, None, None, grid_img,
+                quant_df, quant_csv,
+                integrate_tar_ov, integrate_ref_ov,
+                out_tar_bg, out_ref_bg,
+                masks, quant_df,
+                df_all, csv_all, grid_img, cache_params,
+                None
             )
             
         except Exception as e:
@@ -341,12 +338,12 @@ def create_radialprofile_callbacks(components):
             progress.append(error_msg)
             yield (
                 "\n".join(progress),
-                None, None, None,   # profile
-                None, None,         # quant
-                None, None,         # overlays
-                None, None,         # bak values
-                None, None,         # masks_state, quant_df_state
-                None, None, None, None,  # prof_cache df,csv,plot,params
+                None, None, None, None, None,
+                None, None,
+                None, None,
+                None, None,
+                None, None,
+                None, None, None, None,
                 None
             )
     
@@ -359,11 +356,12 @@ def create_radialprofile_callbacks(components):
             pp_bg_enable_q, pp_bg_mode_q, pp_bg_radius_q, pp_dark_pct_q, bak_tar_q, bak_ref_q,
             pp_norm_enable_q, pp_norm_method_q,
             prof_start_q, prof_end_q, prof_window_size_q, prof_window_step_q, prof_smoothing_q, prof_show_err_q, profile_show_ratio_q,
-            ratio_eps_q, px_w_q, px_h_q
+            ratio_eps_q, px_w_q, px_h_q,
+            components['sg_window_q'], components['sg_poly_q']
         ],
         outputs=[
             progress_text,
-            profile_table_q, profile_csv_q, profile_plot_q,
+            profile_table_q_raw, profile_csv_q, profile_table_q_sg, profile_csv_q_sg, profile_plot_q,
             quant_table_q, quant_csv_q,
             integrate_tar_overlay, integrate_ref_overlay,
             bak_tar_q, bak_ref_q,
@@ -378,8 +376,9 @@ def create_radialprofile_callbacks(components):
                               p_start, p_end, p_win, p_step, p_smooth, p_err, show_ratio,
                               bg_en, bg_mode, bg_rad, dark_pct, nm_en, nm_m,
                               bg_t, bg_r, eps,
+                              sg_w, sg_p,
                               cache_df, cache_csv, cache_plot, cache_params, peak_df):
-        """Redraw profile grid for all cells without peak overlays, using cached data when possible."""
+        """Redraw profile grid (apply SG), and generate SG-smoothed table. Uses cache when possible."""
         # Always ignore any previously computed peaks for a pure redraw
         peak_df = None
         if masks is None:
@@ -423,12 +422,16 @@ def create_radialprofile_callbacks(components):
                 label_list_now = [int(l) for l in labs_now]
             except Exception:
                 label_list_now = []
+            title_suffix = "(SG)" if int(sg_w) >= 3 else "(RAW)"
             grid_img = build_radial_profile_grid_image(
                 cache_df, peak_df,
-                window_bins=int(p_smooth), show_errorbars=bool(p_err), show_ratio=bool(show_ratio),
-                labels=label_list_now, cols=3, tile_width=700
+                window_bins=int(p_smooth), sg_window=int(sg_w), sg_poly=int(sg_p), show_errorbars=bool(p_err), show_ratio=bool(show_ratio),
+                labels=label_list_now, cols=3, tile_width=700, title_suffix=title_suffix
             )
-            return cache_df, cache_csv, grid_img, cache_df, cache_csv, grid_img, cache_params
+            # Build SG-smoothed table from cache
+            df_sg = _apply_sg_to_profile_df(cache_df, int(sg_w), int(sg_p))
+            tmp_csv_sg = tempfile.NamedTemporaryFile(delete=False, suffix="_radial_profile_sg.csv"); df_sg.to_csv(tmp_csv_sg.name, index=False)
+            return cache_df, cache_csv, df_sg, tmp_csv_sg.name, grid_img, cache_df, cache_csv, grid_img, cache_params
 
         # Recompute all
         df_all, csv_all = radial_profile_all_cells(
@@ -444,12 +447,16 @@ def create_radialprofile_callbacks(components):
             label_list_now = [int(l) for l in labs_now]
         except Exception:
             label_list_now = []
+        title_suffix = "(SG)" if int(sg_w) >= 3 else "(RAW)"
         grid_img = build_radial_profile_grid_image(
             df_all, peak_df,
-            window_bins=int(p_smooth), show_errorbars=bool(p_err), show_ratio=bool(show_ratio),
-            labels=label_list_now, cols=3, tile_width=700
+            window_bins=int(p_smooth), sg_window=int(sg_w), sg_poly=int(sg_p), show_errorbars=bool(p_err), show_ratio=bool(show_ratio),
+            labels=label_list_now, cols=3, tile_width=700, title_suffix=title_suffix
         )
-        return df_all, csv_all, grid_img, df_all, csv_all, grid_img, cur_params
+        # Build SG-smoothed table
+        df_sg = _apply_sg_to_profile_df(df_all, int(sg_w), int(sg_p))
+        tmp_csv_sg = tempfile.NamedTemporaryFile(delete=False, suffix="_radial_profile_sg.csv"); df_sg.to_csv(tmp_csv_sg.name, index=False)
+        return df_all, csv_all, df_sg, tmp_csv_sg.name, grid_img, df_all, csv_all, grid_img, cur_params
     
     run_prof_single_btn_q.click(
         fn=_update_single_profile,
@@ -461,19 +468,32 @@ def create_radialprofile_callbacks(components):
             pp_bg_enable_q, pp_bg_mode_q, pp_bg_radius_q, pp_dark_pct_q,
             pp_norm_enable_q, pp_norm_method_q,
             bak_tar_q, bak_ref_q, ratio_eps_q,
+            components['sg_window_q'], components['sg_poly_q'],
             prof_cache_df_state_q, prof_cache_csv_state_q, prof_cache_plot_state_q, prof_cache_params_state_q, peak_diff_state_q
         ],
-        outputs=[profile_table_q, profile_csv_q, profile_plot_q, prof_cache_df_state_q, prof_cache_csv_state_q, prof_cache_plot_state_q, prof_cache_params_state_q],
+        outputs=[profile_table_q_raw, profile_csv_q, profile_table_q_sg, profile_csv_q_sg, profile_plot_q, prof_cache_df_state_q, prof_cache_csv_state_q, prof_cache_plot_state_q, prof_cache_params_state_q],
     )
     
     # Peak difference callback
-    def _compute_peaks(cache_df, quant_df, min_pct, max_pct, smoothing, show_err, show_ratio, peak_algo):
+    def _compute_peaks(cache_df, quant_df, min_pct, max_pct, smoothing, show_err, show_ratio, peak_algo, sg_window, sg_poly, peak_slope_eps_rel):
         """Compute peak differences and update plot as a 3-col grid for all labels, honoring T/R toggle."""
         if cache_df is None or cache_df.empty:
             return gr.update(value=pd.DataFrame()), None, gr.update(), None
         
         algo = str(peak_algo) if peak_algo is not None else 'global_max'
-        peak_df = compute_radial_peak_difference(cache_df, quant_df, float(min_pct), float(max_pct), algo=algo)
+        try:
+            w = int(sg_window) if sg_window is not None else 5
+        except Exception:
+            w = 5
+        try:
+            p = int(sg_poly) if sg_poly is not None else 2
+        except Exception:
+            p = 2
+        try:
+            slope_rel = float(peak_slope_eps_rel) if peak_slope_eps_rel is not None else 0.001
+        except Exception:
+            slope_rel = 0.001
+        peak_df = compute_radial_peak_difference(cache_df, quant_df, float(min_pct), float(max_pct), algo=algo, sg_window=w, sg_poly=p, peak_slope_eps_rel=slope_rel)
         
         if peak_df.empty:
             return gr.update(value=pd.DataFrame()), None, gr.update(), None
@@ -489,7 +509,7 @@ def create_radialprofile_callbacks(components):
             labels = sorted(int(x) for x in cache_df["label"].dropna().unique())
             plot_img = build_radial_profile_grid_image(
                 cache_df, peak_df,
-                window_bins=int(smoothing), show_errorbars=bool(show_err), show_ratio=bool(show_ratio),
+                window_bins=int(smoothing), sg_window=int(w), sg_poly=int(p), show_errorbars=bool(show_err), show_ratio=bool(show_ratio),
                 labels=labels, cols=3, tile_width=700, title_suffix="(with peaks)"
             )
         except Exception:
@@ -499,9 +519,52 @@ def create_radialprofile_callbacks(components):
     
     run_peak_diff_btn_q.click(
         fn=_compute_peaks,
-    inputs=[prof_cache_df_state_q, quant_df_state, peak_min_pct_q, peak_max_pct_q, prof_smoothing_q, prof_show_err_q, profile_show_ratio_q, peak_algo_q],
+        inputs=[prof_cache_df_state_q, quant_df_state, peak_min_pct_q, peak_max_pct_q, prof_smoothing_q, prof_show_err_q, profile_show_ratio_q, peak_algo_q, components['sg_window_q'], components['sg_poly_q'], components['peak_slope_eps_rel_q']],
         outputs=[peak_diff_table_q, peak_diff_csv_q, profile_plot_q, peak_diff_state_q],
     )
+
+    # Helper: Apply SG smoothing per label to means for Quick tab as well
+    def _apply_sg_to_profile_df(df: pd.DataFrame, sg_w: int, sg_p: int) -> pd.DataFrame:
+        try:
+            if df is None or df.empty:
+                return df
+            if sg_w is None or int(sg_w) < 3:
+                return df.copy()
+            def _smooth_group(g: pd.DataFrame) -> pd.DataFrame:
+                g = g.sort_values('center_pct').copy()
+                from scipy.signal import savgol_filter as _sg
+                def _smooth_arr(a: np.ndarray) -> np.ndarray:
+                    a = a.astype(float)
+                    n = a.size
+                    if n < 3 or int(sg_w) < 3:
+                        return a
+                    w = int(sg_w)
+                    if w > n:
+                        w = n if (n % 2 == 1) else n - 1
+                    if w % 2 == 0:
+                        w -= 1
+                    p = min(int(sg_p), max(1, w - 1))
+                    if w < 3:
+                        return a
+                    # NaN-safe via simple interpolation
+                    m = np.isfinite(a)
+                    if m.sum() >= 2:
+                        af = a.copy(); af[~m] = np.interp(np.flatnonzero(~m), np.flatnonzero(m), a[m])
+                    else:
+                        af = a
+                    try:
+                        return _sg(af, window_length=w, polyorder=p, mode='interp')
+                    except Exception:
+                        return a
+                g['mean_target'] = _smooth_arr(g['mean_target'].to_numpy(dtype=float))
+                g['mean_reference'] = _smooth_arr(g['mean_reference'].to_numpy(dtype=float))
+                if 'mean_ratio_T_over_R' in g.columns:
+                    g['mean_ratio_T_over_R'] = _smooth_arr(g['mean_ratio_T_over_R'].to_numpy(dtype=float))
+                return g
+            out = df.groupby('label', as_index=False, group_keys=False).apply(_smooth_group)
+            return out.reset_index(drop=True)
+        except Exception:
+            return df.copy()
 
     # Toggle BG control visibility based on mode (parity with Step-by-Step)
     def _pp_bg_mode_changed_q(mode: str):

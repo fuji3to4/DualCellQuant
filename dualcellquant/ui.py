@@ -194,7 +194,9 @@ def build_ui():
                                 prof_end = gr.Number(value=150.0, label="End %", scale=1)
                                 prof_window_size = gr.Number(value=5.0, label="Window size (%)", scale=1)
                                 prof_window_step = gr.Number(value=2.0, label="Window moving step (%)", scale=1)
-                                prof_smoothing = gr.Number(value=1, label="Plot smoothing (moving avg bins)", scale=1)
+                                # Deprecated (moving average). Hidden to reduce clutter; SG is used for plotting/detection.
+                                prof_smoothing = gr.Number(value=1, label="[deprecated] Plot smoothing (moving avg bins)", scale=1, visible=False)
+
                                 
                             # Cache states for radial profile results (computed by 6.)
                             prof_cache_df_state = gr.State()
@@ -205,18 +207,18 @@ def build_ui():
                             
                             run_prof_btn = gr.Button("5. Compute Radial profile")
                             
-                            profile_table = gr.Dataframe(label="Radial profile (all cells)", interactive=False, pinned_columns=1)
-                            profile_csv = gr.File(label="Download radial profile CSV")
-                            # Single-cell / All selector
+                            with gr.Tabs():
+                                with gr.TabItem("RAW"):
+                                    profile_table_raw = gr.Dataframe(label="Radial profile (RAW)", interactive=False, pinned_columns=1)
+                                    profile_csv = gr.File(label="Download RAW profile CSV")
+                                with gr.TabItem("SG (smoothed)"):
+                                    profile_table_sg = gr.Dataframe(label="Radial profile (SG-applied)", interactive=False, pinned_columns=1)
+                                    profile_csv_sg = gr.File(label="Download SG profile CSV")
+                            # SG controls (applied on update)
                             with gr.Row():
-                                with gr.Column():
-                                    prof_label = gr.Dropdown(
-                                        choices=["All"],
-                                        value="All",
-                                        label="Label for single-cell profile",
-                                        allow_custom_value=False,
-                                    )
-                            # prof_label = gr.State()
+                                sg_window = gr.Number(value=5, label="SG window (odd)", precision=0)
+                                sg_poly = gr.Number(value=2, label="SG poly", precision=0)
+                            # prof_label = "All"
                             prof_show_err = gr.Checkbox(value=True, label="Show error bars (SEM)")
                             profile_show_ratio = gr.Checkbox(value=True, label="Show T/R ratio curve")
                             run_prof_single_btn = gr.Button("Changed label, update profile",)
@@ -228,6 +230,11 @@ def build_ui():
                             with gr.Accordion("6. Peak difference analysis", open=True):
                                 peak_min_pct = gr.Number(value=60.0, label="Min center_pct (%)", scale=1)
                                 peak_max_pct = gr.Number(value=120.0, label="Max center_pct (%)", scale=1)
+                                peak_algo = gr.Dropdown([
+                                    "first_local_top",
+                                    "global_max",
+                                ], value="first_local_top", label="Peak algorithm")
+                                peak_slope_eps_rel = gr.Number(value=0.001, label="Slope eps (relative)")
                             
                             run_peak_diff_btn = gr.Button("6. Compute Peak Differences")
                             
@@ -240,7 +247,7 @@ def build_ui():
                     'seg_source': seg_source, 'seg_chan': seg_chan, 'diameter': diameter,
                     'flow_th': flow_th, 'cellprob_th': cellprob_th, 'use_gpu': use_gpu,
                     'run_seg_btn': run_seg_btn, 'seg_overlay': seg_overlay, 'seg_tiff_file': seg_tiff_file,
-                    'mask_img': mask_img, 'masks_state': masks_state, 'prof_label': prof_label,
+                    'mask_img': mask_img, 'masks_state': masks_state,
                     'prof_cache_df_state': prof_cache_df_state, 'prof_cache_csv_state': prof_cache_csv_state,
                     'prof_cache_plot_state': prof_cache_plot_state, 'prof_cache_params_state': prof_cache_params_state,
                     'tgt_chan': tgt_chan, 'tgt_mask_mode': tgt_mask_mode, 'tgt_pct': tgt_pct,
@@ -269,9 +276,12 @@ def build_ui():
                     'prof_start': prof_start, 'prof_end': prof_end, 'prof_window_size': prof_window_size,
                     'prof_window_step': prof_window_step, 'prof_smoothing': prof_smoothing, 'prof_show_err': prof_show_err,
                     'profile_show_ratio': profile_show_ratio,
-                    'run_prof_btn': run_prof_btn, 'profile_table': profile_table, 'profile_csv': profile_csv,
+                    'run_prof_btn': run_prof_btn, 'profile_table_raw': profile_table_raw, 'profile_csv': profile_csv, 'profile_table_sg': profile_table_sg, 'profile_csv_sg': profile_csv_sg,
                     'run_prof_single_btn': run_prof_single_btn, 'profile_plot': profile_plot,
                     'peak_min_pct': peak_min_pct, 'peak_max_pct': peak_max_pct,
+                    'peak_algo': peak_algo,
+                    'sg_window': sg_window, 'sg_poly': sg_poly,
+                    'peak_slope_eps_rel': peak_slope_eps_rel,
                     'run_peak_diff_btn': run_peak_diff_btn, 'peak_diff_table': peak_diff_table,
                     'peak_diff_csv': peak_diff_csv, 'peak_diff_state': peak_diff_state,
                     'label_scale': label_scale,
@@ -290,7 +300,7 @@ def build_ui():
                         ref_chan, ref_mask_mode, ref_sat_limit, ref_pct, ref_min_obj,
                         px_w, px_h,
                         prof_start, prof_end, prof_window_size, prof_window_step, prof_smoothing, prof_show_err, profile_show_ratio,
-                        peak_min_pct, peak_max_pct,
+                        peak_min_pct, peak_max_pct, peak_algo, sg_window, sg_poly, peak_slope_eps_rel,
                         ratio_eps,
                         label_scale,
                     ],
@@ -306,7 +316,7 @@ def build_ui():
                                 ref_chan: 'gray', ref_mask_mode: 'global_percentile', ref_sat_limit: 254, ref_pct: 75.0, ref_min_obj: 50,
                                 px_w: 1.0, px_h: 1.0,
                                 prof_start: 0.0, prof_end: 150.0, prof_window_size: 10.0, prof_window_step: 5.0, prof_smoothing: 1, prof_show_err: true, profile_show_ratio: true,
-                                peak_min_pct: 60.0, peak_max_pct: 120.0,
+                                peak_min_pct: 60.0, peak_max_pct: 120.0, peak_algo: 'global_max', sg_window: 5, sg_poly: 2, peak_slope_eps_rel: 0.001,
                                 ratio_eps: 1e-6,
                                 label_scale: {float(LABEL_SCALE)},
                             }};
@@ -315,6 +325,8 @@ def build_ui():
                             s.seg_chan = mapChan(s.seg_chan);
                             s.tgt_chan = mapChan(s.tgt_chan);
                             s.ref_chan = mapChan(s.ref_chan);
+                            // sanitize deprecated algo
+                            if (s.peak_algo === 'first_shoulder') s.peak_algo = 'first_local_top';
                             return [
                                 s.seg_source,
                                 s.seg_chan,
@@ -352,6 +364,10 @@ def build_ui():
                                 s.profile_show_ratio,
                                 s.peak_min_pct,
                                 s.peak_max_pct,
+                                s.peak_algo,
+                                s.sg_window,
+                                s.sg_poly,
+                                s.peak_slope_eps_rel,
                                 s.ratio_eps,
                                 s.label_scale,
                             ];
@@ -365,7 +381,7 @@ def build_ui():
                                 'gray', 'global_percentile', 254, 75.0, 50,
                                 1.0, 1.0,
                                 0.0, 150.0, 10.0, 5.0, 1, true, true,
-                                60.0, 120.0,
+                                60.0, 120.0, 'global_max', 5, 2, 0.001,
                                 1e-6,
                                 {float(LABEL_SCALE)},
                             ];
@@ -401,7 +417,7 @@ def build_ui():
                     (tgt_chan, 'tgt_chan'), (tgt_mask_mode, 'tgt_mask_mode'), (tgt_sat_limit, 'tgt_sat_limit'), (tgt_pct, 'tgt_pct'), (tgt_min_obj, 'tgt_min_obj'),
                     (ref_chan, 'ref_chan'), (ref_mask_mode, 'ref_mask_mode'), (ref_sat_limit, 'ref_sat_limit'), (ref_pct, 'ref_pct'), (ref_min_obj, 'ref_min_obj'),
                     (px_w, 'px_w'), (px_h, 'px_h'), (label_scale, 'label_scale'),
-                    (prof_start, 'prof_start'), (prof_end, 'prof_end'), (prof_window_size, 'prof_window_size'), (prof_window_step, 'prof_window_step'), (prof_smoothing, 'prof_smoothing'), (prof_show_err, 'prof_show_err'), (profile_show_ratio, 'profile_show_ratio'), (peak_min_pct, 'peak_min_pct'), (peak_max_pct, 'peak_max_pct'), (ratio_eps, 'ratio_eps'),
+                    (prof_start, 'prof_start'), (prof_end, 'prof_end'), (prof_window_size, 'prof_window_size'), (prof_window_step, 'prof_window_step'), (prof_smoothing, 'prof_smoothing'), (prof_show_err, 'prof_show_err'), (profile_show_ratio, 'profile_show_ratio'), (peak_min_pct, 'peak_min_pct'), (peak_max_pct, 'peak_max_pct'), (peak_algo, 'peak_algo'), (sg_window, 'sg_window'), (sg_poly, 'sg_poly'), (peak_slope_eps_rel, 'peak_slope_eps_rel'), (ratio_eps, 'ratio_eps'),
                 ]:
                     _persist_change(comp, key)
 
@@ -444,7 +460,7 @@ def build_ui():
                         ref_chan, ref_mask_mode, ref_sat_limit, ref_pct, ref_min_obj,
                         px_w, px_h,
                         prof_start, prof_end, prof_window_size, prof_window_step, prof_smoothing, prof_show_err, profile_show_ratio,
-                        peak_min_pct, peak_max_pct, ratio_eps,
+                        peak_min_pct, peak_max_pct, peak_algo, sg_window, sg_poly, peak_slope_eps_rel, ratio_eps,
                         label_scale,
                     ],
                     js=f"""
@@ -463,7 +479,7 @@ def build_ui():
                             'gray', 'none', 254, 75.0, 50,
                             1.0, 1.0,
                             0.0, 150.0, 10.0, 5.0, 1, true, true,
-                            60.0, 120.0, {float(1e-6)},
+                            60.0, 120.0, 'global_max', 5, 2, 0.001, {float(1e-6)},
                             {float(LABEL_SCALE)},
                         ];
                     }}
@@ -537,7 +553,9 @@ def build_ui():
                             prof_end_q = gr.Number(value=150.0, label="End %")
                             prof_window_size_q = gr.Number(value=10.0, label="Window size %")
                             prof_window_step_q = gr.Number(value=5.0, label="Window step %")
-                            prof_smoothing_q = gr.Number(value=1, label="Smoothing")
+                            # Deprecated (moving average). Hidden; SG is now used for plotting/detection.
+                            prof_smoothing_q = gr.Number(value=1, label="[deprecated] Smoothing (moving avg)", visible=False)
+
                         
 
                         
@@ -566,18 +584,29 @@ def build_ui():
                         with gr.Tabs():
 
                             with gr.TabItem("📈 Profile Plot"):
+                                
+                                with gr.Row():
+                                    sg_window_q = gr.Number(value=5, label="SG window (odd)", precision=0)
+                                    sg_poly_q = gr.Number(value=2, label="SG poly", precision=0)
                                 prof_show_err_q = gr.Checkbox(value=True, label="Show error bars")
                                 profile_show_ratio_q = gr.Checkbox(value=True, label="Show T/R ratio curve")
                                 run_prof_single_btn_q = gr.Button("Redraw (no peaks)")
                                 profile_plot_q = gr.Image(type="pil", label="Radial intensity profile (3-col grid)", width=900)
                             
                             with gr.TabItem("📋 Profile Data"):
-                                profile_table_q = gr.Dataframe(label="Radial profile (all cells)", 
-                                                              interactive=False, pinned_columns=1)
-                                profile_csv_q = gr.File(label="Download profile CSV")
+                                with gr.Tabs():
+                                    with gr.TabItem("RAW"):
+                                        profile_table_q_raw = gr.Dataframe(label="Radial profile (RAW)", interactive=False, pinned_columns=1)
+                                        profile_csv_q = gr.File(label="Download RAW profile CSV")
+                                    with gr.TabItem("SG (smoothed)"):
+                                        profile_table_q_sg = gr.Dataframe(label="Radial profile (SG-applied)", interactive=False, pinned_columns=1)
+                                        profile_csv_q_sg = gr.File(label="Download SG profile CSV")
                         
                         gr.Markdown("## ⚡ Peak Difference Analysis")
                         with gr.Accordion("6. Peak analysis settings", open=True):
+                            with gr.Row():    
+                                sg_window_q = gr.Number(value=5, label="SG window (odd)", precision=0)
+                                sg_poly_q = gr.Number(value=2, label="SG poly", precision=0)
                             with gr.Row():
                                 peak_min_pct_q = gr.Number(value=60.0, label="Min %")
                                 peak_max_pct_q = gr.Number(value=120.0, label="Max %")
@@ -585,6 +614,7 @@ def build_ui():
                                     "global_max",
                                     "first_local_top",
                                 ], value="global_max", label="Peak algorithm")
+                                peak_slope_eps_rel_q = gr.Number(value=0.001, label="Slope eps (relative)")
                             
 
 
@@ -615,12 +645,14 @@ def build_ui():
                     'prof_start_q': prof_start_q, 'prof_end_q': prof_end_q, 'prof_window_size_q': prof_window_size_q,
                     'prof_window_step_q': prof_window_step_q, 'prof_smoothing_q': prof_smoothing_q, 'prof_show_err_q': prof_show_err_q,
                     'peak_min_pct_q': peak_min_pct_q, 'peak_max_pct_q': peak_max_pct_q, 'peak_algo_q': peak_algo_q,
+                    'sg_window_q': sg_window_q, 'sg_poly_q': sg_poly_q,
+                    'peak_slope_eps_rel_q': peak_slope_eps_rel_q,
                     'ratio_eps_q': ratio_eps_q, 'px_w_q': px_w_q, 'px_h_q': px_h_q,
                     'run_full_btn': run_full_btn, 'progress_text': progress_text,
                     'integrate_tar_overlay': integrate_tar_overlay, 'integrate_ref_overlay': integrate_ref_overlay,
                     'quant_table_q': quant_table_q, 'quant_csv_q': quant_csv_q,
                     'run_prof_single_btn_q': run_prof_single_btn_q,
-                    'profile_show_ratio_q': profile_show_ratio_q, 'profile_plot_q': profile_plot_q, 'profile_table_q': profile_table_q, 'profile_csv_q': profile_csv_q,
+                    'profile_show_ratio_q': profile_show_ratio_q, 'profile_plot_q': profile_plot_q, 'profile_table_q_raw': profile_table_q_raw, 'profile_csv_q': profile_csv_q, 'profile_table_q_sg': profile_table_q_sg, 'profile_csv_q_sg': profile_csv_q_sg,
                     'run_peak_diff_btn_q': run_peak_diff_btn_q, 'peak_diff_table_q': peak_diff_table_q, 'peak_diff_csv_q': peak_diff_csv_q,
                     'masks_state': masks_state, 'quant_df_state': quant_df_state,
                     'prof_cache_df_state_q': prof_cache_df_state_q, 'prof_cache_csv_state_q': prof_cache_csv_state_q,
@@ -641,7 +673,7 @@ def build_ui():
                         pp_norm_enable_q, pp_norm_method_q,
                         prof_start_q, prof_end_q, prof_window_size_q, prof_window_step_q,
                         prof_smoothing_q, prof_show_err_q, profile_show_ratio_q,
-                        peak_min_pct_q, peak_max_pct_q, peak_algo_q,
+                        peak_min_pct_q, peak_max_pct_q, peak_algo_q, sg_window_q, sg_poly_q, peak_slope_eps_rel_q,
                         ratio_eps_q, px_w_q, px_h_q,
                     ],
                     js=f"""
@@ -656,7 +688,7 @@ def build_ui():
                                 pp_norm_enable: false, pp_norm_method: 'min-max',
                                 prof_start: 0.0, prof_end: 150.0, prof_window_size: 10.0, prof_window_step: 5.0,
                                 prof_smoothing: 1, prof_show_err: true, profile_show_ratio: true,
-                                peak_min_pct: 60.0, peak_max_pct: 120.0, peak_algo: 'global_max',
+                                peak_min_pct: 60.0, peak_max_pct: 120.0, peak_algo: 'global_max', sg_window: 5, sg_poly: 2, peak_slope_eps_rel: 0.001,
                                 ratio_eps: 1e-6, px_w: 1.0, px_h: 1.0,
                             }};
                             let s = raw ? {{...d, ...JSON.parse(raw)}} : d;
@@ -664,6 +696,8 @@ def build_ui():
                             s.seg_chan = mapChan(s.seg_chan);
                             s.tgt_chan = mapChan(s.tgt_chan);
                             s.ref_chan = mapChan(s.ref_chan);
+                            // sanitize deprecated algo
+                            if (s.peak_algo === 'first_shoulder') s.peak_algo = 'first_local_top';
                             return [
                                 s.seg_source, s.seg_chan, s.diameter, s.flow_th, s.cellprob_th, s.use_gpu,
                                 s.tgt_chan, s.tgt_mask_mode, s.tgt_pct, s.tgt_sat_limit, s.tgt_min_obj,
@@ -673,11 +707,12 @@ def build_ui():
                                 s.prof_start, s.prof_end, s.prof_window_size, s.prof_window_step,
                                 s.prof_smoothing, s.prof_show_err, s.profile_show_ratio,
                                 s.peak_min_pct, s.peak_max_pct, s.peak_algo,
+                                s.sg_window, s.sg_poly, s.peak_slope_eps_rel,
                                 s.ratio_eps, s.px_w, s.px_h,
                             ];
                         }} catch (e) {{
                             console.warn('Failed to load saved settings:', e);
-                            return Array(35).fill(null);
+                            return Array(36).fill(null);
                         }}
                     }}
                     """,
@@ -718,7 +753,7 @@ def build_ui():
                     (prof_start_q, 'prof_start'), (prof_end_q, 'prof_end'), 
                     (prof_window_size_q, 'prof_window_size'), (prof_window_step_q, 'prof_window_step'),
                     (prof_smoothing_q, 'prof_smoothing'), (prof_show_err_q, 'prof_show_err'), (profile_show_ratio_q, 'profile_show_ratio'),
-                    (peak_min_pct_q, 'peak_min_pct'), (peak_max_pct_q, 'peak_max_pct'), (peak_algo_q, 'peak_algo'),
+                    (peak_min_pct_q, 'peak_min_pct'), (peak_max_pct_q, 'peak_max_pct'), (peak_algo_q, 'peak_algo'), (sg_window_q, 'sg_window'), (sg_poly_q, 'sg_poly'), (peak_slope_eps_rel_q, 'peak_slope_eps_rel'),
                     (ratio_eps_q, 'ratio_eps'), (px_w_q, 'px_w'), (px_h_q, 'px_h'),
                 ]:
                     _persist_change_q(comp, key)
@@ -736,7 +771,7 @@ def build_ui():
                 pp_norm_enable, pp_norm_method,
                         prof_start, prof_end, prof_window_size, prof_window_step,
                         prof_smoothing, prof_show_err, profile_show_ratio,
-                peak_min_pct, peak_max_pct,
+                peak_min_pct, peak_max_pct, peak_algo, sg_window, sg_poly,
                 ratio_eps, px_w, px_h,
             ],
             js=f"""
@@ -751,7 +786,7 @@ def build_ui():
                         pp_norm_enable: false, pp_norm_method: 'min-max',
                         prof_start: 0.0, prof_end: 150.0, prof_window_size: 10.0, prof_window_step: 5.0,
                                 prof_smoothing: 1, prof_show_err: true, profile_show_ratio: true,
-                        peak_min_pct: 60.0, peak_max_pct: 120.0,
+                        peak_min_pct: 60.0, peak_max_pct: 120.0, peak_algo: 'global_max', sg_window: 5, sg_poly: 2,
                         ratio_eps: 1e-6, px_w: 1.0, px_h: 1.0,
                     }};
                     let s = raw ? {{...d, ...JSON.parse(raw)}} : d;
@@ -759,6 +794,8 @@ def build_ui():
                     s.seg_chan = mapChan(s.seg_chan);
                     s.tgt_chan = mapChan(s.tgt_chan);
                     s.ref_chan = mapChan(s.ref_chan);
+                    // sanitize deprecated algo
+                    if (s.peak_algo === 'first_shoulder') s.peak_algo = 'first_local_top';
                     return [
                         s.seg_source, s.seg_chan, s.diameter, s.flow_th, s.cellprob_th, s.use_gpu,
                         s.tgt_chan, s.tgt_mask_mode, s.tgt_pct, s.tgt_sat_limit, s.tgt_min_obj,
@@ -767,12 +804,12 @@ def build_ui():
                         s.pp_norm_enable, s.pp_norm_method,
                         s.prof_start, s.prof_end, s.prof_window_size, s.prof_window_step,
                                 s.prof_smoothing, s.prof_show_err, s.profile_show_ratio,
-                        s.peak_min_pct, s.peak_max_pct,
+                        s.peak_min_pct, s.peak_max_pct, s.peak_algo, s.sg_window, s.sg_poly,
                         s.ratio_eps, s.px_w, s.px_h,
                     ];
                 }} catch (e) {{
                     console.warn('Failed to reload settings on tab switch:', e);
-                    return Array(34).fill(null);
+                    return Array(37).fill(null);
                 }}
             }}
             """,
@@ -790,7 +827,7 @@ def build_ui():
                 pp_norm_enable_q, pp_norm_method_q,
                 prof_start_q, prof_end_q, prof_window_size_q, prof_window_step_q,
                 prof_smoothing_q, prof_show_err_q, profile_show_ratio_q,
-                peak_min_pct_q, peak_max_pct_q, peak_algo_q,
+                peak_min_pct_q, peak_max_pct_q, peak_algo_q, sg_window_q, sg_poly_q,
                 ratio_eps_q, px_w_q, px_h_q,
             ],
             js=f"""
@@ -805,7 +842,7 @@ def build_ui():
                         pp_norm_enable: false, pp_norm_method: 'min-max',
                         prof_start: 0.0, prof_end: 150.0, prof_window_size: 10.0, prof_window_step: 5.0,
                         prof_smoothing: 1, prof_show_err: true, profile_show_ratio: true,
-                        peak_min_pct: 60.0, peak_max_pct: 120.0, peak_algo: 'global_max',
+                        peak_min_pct: 60.0, peak_max_pct: 120.0, peak_algo: 'global_max', sg_window: 5, sg_poly: 2,
                         ratio_eps: 1e-6, px_w: 1.0, px_h: 1.0,
                     }};
                     let s = raw ? {{...d, ...JSON.parse(raw)}} : d;
@@ -821,12 +858,12 @@ def build_ui():
                         s.pp_norm_enable, s.pp_norm_method,
                         s.prof_start, s.prof_end, s.prof_window_size, s.prof_window_step,
                         s.prof_smoothing, s.prof_show_err, s.profile_show_ratio,
-                        s.peak_min_pct, s.peak_max_pct, s.peak_algo,
+                        s.peak_min_pct, s.peak_max_pct, s.peak_algo, s.sg_window, s.sg_poly,
                         s.ratio_eps, s.px_w, s.px_h,
                     ];
                 }} catch (e) {{
                     console.warn('Failed to reload settings on tab switch:', e);
-                    return Array(35).fill(null);
+                    return Array(37).fill(null);
                 }}
             }}
             """,

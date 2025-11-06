@@ -44,6 +44,43 @@ import dualcellquant as dcq
 _LABEL_SCALE_FALLBACK: float = 1.8
 
 
+def _savgol_nan_safe(y: np.ndarray, window_length: int, polyorder: int) -> np.ndarray:
+    """NaNを無視してSavitzky-Golay平滑を適用。端点は線形補間でNaNを埋める簡易版。
+    window_lengthは奇数かつデータ長以下に切り詰め、polyorder < window_lengthになるよう調整します。
+    """
+    import numpy as _np
+    from scipy.signal import savgol_filter as _sg
+    a = _np.asarray(y, dtype=float)
+    n = a.size
+    if n == 0:
+        return a
+    w = int(max(3, window_length or 3))
+    if w % 2 == 0:
+        w += 1
+    # wはデータ長以下の奇数に調整
+    if n < 3:
+        return a
+    if w > n:
+        w = n if (n % 2 == 1) else n - 1
+    p = int(max(1, polyorder or 2))
+    p = min(p, w - 1)
+    b = a.copy()
+    idx = _np.arange(n)
+    mask = _np.isfinite(b)
+    if _np.any(mask):
+        if not _np.all(mask):
+            # 線形補間で欠損を埋める
+            try:
+                b[~mask] = _np.interp(idx[~mask], idx[mask], b[mask])
+            except Exception:
+                b[~mask] = _np.nanmean(b[mask])
+        try:
+            return _sg(b, window_length=w, polyorder=p, mode="interp")
+        except Exception:
+            return b
+    return a
+
+
 
 def _load_font(point_size: int) -> ImageFont.ImageFont:
     candidates = [
@@ -178,6 +215,9 @@ def plot_radial_profile_with_peaks(
     peak_df: pd.DataFrame = None,
     label_filter: int | str = "All",
     window_bins: int = 1,
+    *,
+    sg_window: int = 5,
+    sg_poly: int = 2,
     show_errorbars: bool = True,
     show_ratio: bool = True,
     title_suffix: str = "",
@@ -277,9 +317,13 @@ def plot_radial_profile_with_peaks(
             M_ratio.append(MR); SEM_ratio.append(sem_r)
         
         x = bins
-        ma_t = _moving_average_nan(np.array(M_t, dtype=float), int(window_bins)) if window_bins and int(window_bins) > 1 else np.array(M_t, dtype=float)
-        ma_r = _moving_average_nan(np.array(M_r, dtype=float), int(window_bins)) if window_bins and int(window_bins) > 1 else np.array(M_r, dtype=float)
-        ma_ratio = _moving_average_nan(np.array(M_ratio, dtype=float), int(window_bins)) if window_bins and int(window_bins) > 1 else np.array(M_ratio, dtype=float)
+        # SG smoothing for plot (unified with peak detection parameters)
+        arr_t = np.array(M_t, dtype=float)
+        arr_r = np.array(M_r, dtype=float)
+        arr_ratio = np.array(M_ratio, dtype=float)
+        ma_t = _savgol_nan_safe(arr_t, int(sg_window), int(sg_poly)) if int(sg_window) and int(sg_window) > 2 else arr_t
+        ma_r = _savgol_nan_safe(arr_r, int(sg_window), int(sg_poly)) if int(sg_window) and int(sg_window) > 2 else arr_r
+        ma_ratio = _savgol_nan_safe(arr_ratio, int(sg_window), int(sg_poly)) if int(sg_window) and int(sg_window) > 2 else arr_ratio
         sem_t_arr = np.array(SEM_t, dtype=float)
         sem_r_arr = np.array(SEM_r, dtype=float)
         sem_ratio_arr = np.array(SEM_ratio, dtype=float)
@@ -313,15 +357,18 @@ def plot_radial_profile_with_peaks(
             buf.close()
             return img
         x = df_lab["center_pct"].to_numpy(dtype=float)
-        ma_t = _moving_average_nan(df_lab["mean_target"].to_numpy(dtype=float), int(window_bins)) if window_bins and int(window_bins) > 1 else df_lab["mean_target"].to_numpy(dtype=float)
-        ma_r = _moving_average_nan(df_lab["mean_reference"].to_numpy(dtype=float), int(window_bins)) if window_bins and int(window_bins) > 1 else df_lab["mean_reference"].to_numpy(dtype=float)
-        ma_ratio = _moving_average_nan(df_lab["mean_ratio_T_over_R"].to_numpy(dtype=float), int(window_bins)) if window_bins and int(window_bins) > 1 else df_lab["mean_ratio_T_over_R"].to_numpy(dtype=float)
+        arr_t = df_lab["mean_target"].to_numpy(dtype=float)
+        arr_r = df_lab["mean_reference"].to_numpy(dtype=float)
+        arr_ratio = df_lab["mean_ratio_T_over_R"].to_numpy(dtype=float)
+        ma_t = _savgol_nan_safe(arr_t, int(sg_window), int(sg_poly)) if int(sg_window) and int(sg_window) > 2 else arr_t
+        ma_r = _savgol_nan_safe(arr_r, int(sg_window), int(sg_poly)) if int(sg_window) and int(sg_window) > 2 else arr_r
+        ma_ratio = _savgol_nan_safe(arr_ratio, int(sg_window), int(sg_poly)) if int(sg_window) and int(sg_window) > 2 else arr_ratio
         sem_t_arr = df_lab.get("sem_target", df_lab.get("std_target", pd.Series(np.nan, index=df_lab.index))).to_numpy(dtype=float)
         sem_r_arr = df_lab.get("sem_reference", df_lab.get("std_reference", pd.Series(np.nan, index=df_lab.index))).to_numpy(dtype=float)
         sem_ratio_arr = df_lab.get("sem_ratio_T_over_R", df_lab.get("std_ratio_T_over_R", pd.Series(np.nan, index=df_lab.index))).to_numpy(dtype=float)
         plot_label_text = f"Label {lab_int}"
     
-    # Create plot
+    # Create single plot (no second derivative panel)
     fig, ax1 = plt.subplots(figsize=(7, 5))
     if show_errorbars:
         ax1.errorbar(x, ma_t, yerr=sem_t_arr, fmt='-o', ms=3, capsize=2, label="Target", color="tab:red", alpha=0.9)
@@ -333,8 +380,8 @@ def plot_radial_profile_with_peaks(
     ax1.set_ylabel("Mean intensity")
     ax1.grid(True, alpha=0.3)
     
-    # Add peak markers if peak_df is provided
-    peak_annotation_text = None
+    # Add peak markers if peak_df is provided (no yellow Δ annotation)
+    peak_annotation_text = None  # intentionally unused to suppress yellow delta box
     if peak_df is not None and not peak_df.empty:
         if is_all:
             # For "All", we can't show individual peaks since they differ per cell
@@ -356,14 +403,7 @@ def plot_radial_profile_with_peaks(
                 if np.isfinite(max_r_pct):
                     ax1.axvline(max_r_pct, color="blue", linestyle="--", alpha=0.5, linewidth=1.5, label=f"Reference peak: {max_r_pct:.1f}%")
                 
-                # Build annotation text for difference
-                if np.isfinite(diff_pct):
-                    text_lines = [f"Δ = {diff_pct:.1f}%"]
-                    if np.isfinite(diff_px):
-                        text_lines.append(f"  (≈{diff_px:.2f} px)")
-                    if np.isfinite(diff_um):
-                        text_lines.append(f"  (≈{diff_um:.2f} μm)")
-                    peak_annotation_text = "\n".join(text_lines)
+                # Do not build annotation text; only draw vertical lines
     
     # Plot ratio on secondary axis if requested
     if show_ratio:
@@ -382,12 +422,7 @@ def plot_radial_profile_with_peaks(
         # Legend for ax1 only
         ax1.legend(loc="upper left", fontsize=8)
     
-    # Add peak difference annotation after legend (so it appears on top)
-    if peak_annotation_text is not None:
-        ax1.text(0.98, 0.95, peak_annotation_text, transform=ax1.transAxes,
-                verticalalignment="top", horizontalalignment="right",
-                bbox=dict(boxstyle="round,pad=0.5", facecolor="yellow", alpha=0.7),
-                fontsize=9, family="monospace")
+    # No delta annotation box (requested to be removed)
     
     plot_title = f"Radial Profile - {plot_label_text}"
     if title_suffix:
@@ -433,6 +468,8 @@ def save_radial_profile_grid_png(
     peak_df: pd.DataFrame | None = None,
     *,
     window_bins: int = 1,
+    sg_window: int = 5,
+    sg_poly: int = 2,
     show_errorbars: bool = True,
     show_ratio: bool = True,
     labels: list[int] | None = None,
@@ -500,7 +537,7 @@ def save_radial_profile_grid_png(
     for lab in labels:
         try:
             im = plot_radial_profile_with_peaks(
-                df, peak_df, label_filter=int(lab), window_bins=int(window_bins),
+                df, peak_df, label_filter=int(lab), window_bins=int(window_bins), sg_window=int(sg_window), sg_poly=int(sg_poly),
                 show_errorbars=bool(show_errorbars), show_ratio=bool(show_ratio), title_suffix=title_suffix,
             )
         except Exception:
@@ -552,6 +589,8 @@ def build_radial_profile_grid_image(
     peak_df: pd.DataFrame | None = None,
     *,
     window_bins: int = 1,
+    sg_window: int = 5,
+    sg_poly: int = 2,
     show_errorbars: bool = True,
     show_ratio: bool = True,
     labels: list[int] | None = None,
@@ -566,6 +605,8 @@ def build_radial_profile_grid_image(
     path = save_radial_profile_grid_png(
         df, peak_df,
         window_bins=window_bins,
+        sg_window=sg_window,
+        sg_poly=sg_poly,
         show_errorbars=show_errorbars,
         show_ratio=show_ratio,
         labels=labels,
@@ -589,4 +630,6 @@ def build_radial_profile_grid_image(
         img = Image.open(buf).copy()
         buf.close()
         return img
+
+        # (moved to top of file)
 

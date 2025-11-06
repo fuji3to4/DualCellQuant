@@ -136,19 +136,24 @@ def radial_profile_analysis(
     labels = np.unique(masks); labels = labels[labels > 0]
     if labels.size == 0:
         raise ValueError("No cells found in masks.")
-    # Preprocess images for measurement in native scale
-    tgt_nat = preprocess_for_processing(
-        target_img, use_native_scale=True,
-        bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
-        norm_enable=pp_norm_enable, norm_method=pp_norm_method,
-        manual_background=manual_tar_bg,
-    )
-    ref_nat = preprocess_for_processing(
-        reference_img, use_native_scale=True,
-        bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
-        norm_enable=pp_norm_enable, norm_method=pp_norm_method,
-        manual_background=manual_ref_bg,
-    )
+    # Preprocess images (skip if both BG and normalization are disabled to avoid double processing)
+    if not bool(pp_bg_enable) and not bool(pp_norm_enable):
+        # Use native-scale arrays without any correction/normalization
+        tgt_nat = pil_to_numpy_native(target_img)
+        ref_nat = pil_to_numpy_native(reference_img)
+    else:
+        tgt_nat = preprocess_for_processing(
+            target_img, use_native_scale=True,
+            bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+            norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+            manual_background=manual_tar_bg,
+        )
+        ref_nat = preprocess_for_processing(
+            reference_img, use_native_scale=True,
+            bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+            norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+            manual_background=manual_ref_bg,
+        )
     tgt_gray = extract_single_channel(tgt_nat, tgt_chan)
     ref_gray = extract_single_channel(ref_nat, ref_chan)
 
@@ -232,15 +237,24 @@ def radial_profile_analysis(
 
     # Build results
     center_pct = np.array([(a + b) / 2.0 for a, b in windows])
-    mean_t = np.where(cnt > 0, sum_t / cnt, np.nan)
-    mean_r = np.where(cnt > 0, sum_r / cnt, np.nan)
-    # unbiased variance estimate; guard small n
-    var_t = np.where(cnt > 1, (sum_t2 - (sum_t ** 2) / cnt) / (cnt - 1), np.nan)
-    var_r = np.where(cnt > 1, (sum_r2 - (sum_r ** 2) / cnt) / (cnt - 1), np.nan)
+    # means with masked division (avoid warnings)
+    mean_t = np.full(nwindows, np.nan, dtype=float)
+    np.divide(sum_t, cnt, out=mean_t, where=cnt > 0)
+    mean_r = np.full(nwindows, np.nan, dtype=float)
+    np.divide(sum_r, cnt, out=mean_r, where=cnt > 0)
+    # unbiased variance estimate; guard small n using masked division
+    num_t = sum_t2 - np.divide(sum_t ** 2, cnt, out=np.zeros_like(sum_t2), where=cnt > 0)
+    num_r = sum_r2 - np.divide(sum_r ** 2, cnt, out=np.zeros_like(sum_r2), where=cnt > 0)
+    var_t = np.full(nwindows, np.nan, dtype=float)
+    var_r = np.full(nwindows, np.nan, dtype=float)
+    np.divide(num_t, (cnt - 1), out=var_t, where=cnt > 1)
+    np.divide(num_r, (cnt - 1), out=var_r, where=cnt > 1)
     std_t = np.sqrt(var_t)
     std_r = np.sqrt(var_r)
-    sem_t = np.where(cnt > 0, std_t / np.sqrt(cnt), np.nan)
-    sem_r = np.where(cnt > 0, std_r / np.sqrt(cnt), np.nan)
+    sem_t = np.full(nwindows, np.nan, dtype=float)
+    sem_r = np.full(nwindows, np.nan, dtype=float)
+    np.divide(std_t, np.sqrt(cnt, dtype=float), out=sem_t, where=cnt > 0)
+    np.divide(std_r, np.sqrt(cnt, dtype=float), out=sem_r, where=cnt > 0)
     # Ratio on pixels where reference > 0: approximate using means (optionally) or recompute per-pixel
     # Here we use mean of per-pixel ratio by sampling mask again per window for better fidelity
     mean_ratio = np.full(nwindows, np.nan, dtype=float)
@@ -288,6 +302,9 @@ def radial_profile_analysis(
     # Table
     band_starts = [a for a, b in windows]
     band_ends = [b for a, b in windows]
+    # precompute sem for ratio with masked division
+    sem_ratio_arr = np.full(nwindows, np.nan, dtype=float)
+    np.divide(std_ratio, np.sqrt(cnt_ratio, dtype=float), out=sem_ratio_arr, where=cnt_ratio > 0)
     df = pd.DataFrame({
         "band_start_pct": band_starts,
         "band_end_pct": band_ends,
@@ -301,7 +318,7 @@ def radial_profile_analysis(
         "sem_reference": sem_r,
         "mean_ratio_T_over_R": mean_ratio,
         "std_ratio_T_over_R": std_ratio,
-        "sem_ratio_T_over_R": np.where(cnt_ratio > 0, std_ratio / np.sqrt(cnt_ratio), np.nan),
+        "sem_ratio_T_over_R": sem_ratio_arr,
         "count_ratio_px": cnt_ratio,
     })
     tmp_csv = tempfile.NamedTemporaryFile(delete=False, suffix="_radial_profile.csv")
@@ -324,7 +341,7 @@ def radial_profile_analysis(
     ax2 = ax1.twinx()
     ma_ratio = _moving_average_nan(mean_ratio, int(window_bins)) if window_bins and window_bins > 1 else mean_ratio
     if show_errorbars:
-        ax2.errorbar(center_pct, ma_ratio, yerr=np.where(cnt_ratio > 0, std_ratio / np.sqrt(cnt_ratio), np.nan), fmt='-s', ms=3, capsize=2, label="T/R", color="tab:green", alpha=0.9)
+        ax2.errorbar(center_pct, ma_ratio, yerr=sem_ratio_arr, fmt='-s', ms=3, capsize=2, label="T/R", color="tab:green", alpha=0.9)
     else:
         ax2.plot(center_pct, ma_ratio, label="T/R", color="tab:green", linestyle="--")
     ax2.set_ylabel("Mean ratio (T/R)")
@@ -365,19 +382,23 @@ def radial_profile_single(
     show_errorbars: bool = True,
     ratio_ref_epsilon: float = 0.0,
 ):
-    # Preprocess once
-    tgt_nat = preprocess_for_processing(
-        target_img, use_native_scale=True,
-        bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
-        norm_enable=pp_norm_enable, norm_method=pp_norm_method,
-        manual_background=manual_tar_bg,
-    )
-    ref_nat = preprocess_for_processing(
-        reference_img, use_native_scale=True,
-        bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
-        norm_enable=pp_norm_enable, norm_method=pp_norm_method,
-        manual_background=manual_ref_bg,
-    )
+    # Preprocess once (skip when both BG and normalization are disabled)
+    if not bool(pp_bg_enable) and not bool(pp_norm_enable):
+        tgt_nat = pil_to_numpy_native(target_img)
+        ref_nat = pil_to_numpy_native(reference_img)
+    else:
+        tgt_nat = preprocess_for_processing(
+            target_img, use_native_scale=True,
+            bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+            norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+            manual_background=manual_tar_bg,
+        )
+        ref_nat = preprocess_for_processing(
+            reference_img, use_native_scale=True,
+            bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+            norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+            manual_background=manual_ref_bg,
+        )
     tgt_gray = extract_single_channel(tgt_nat, tgt_chan)
     ref_gray = extract_single_channel(ref_nat, ref_chan)
     labels_all = np.unique(masks); labels_all = labels_all[labels_all > 0]
@@ -546,19 +567,23 @@ def radial_profile_all_cells(
     manual_ref_bg: float | None = None,
     ratio_ref_epsilon: float = 0.0,
 ):
-    # Preprocess once
-    tgt_nat = preprocess_for_processing(
-        target_img, use_native_scale=True,
-        bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
-        norm_enable=pp_norm_enable, norm_method=pp_norm_method,
-        manual_background=manual_tar_bg,
-    )
-    ref_nat = preprocess_for_processing(
-        reference_img, use_native_scale=True,
-        bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
-        norm_enable=pp_norm_enable, norm_method=pp_norm_method,
-        manual_background=manual_ref_bg,
-    )
+    # Preprocess once (skip when both BG and normalization are disabled)
+    if not bool(pp_bg_enable) and not bool(pp_norm_enable):
+        tgt_nat = pil_to_numpy_native(target_img)
+        ref_nat = pil_to_numpy_native(reference_img)
+    else:
+        tgt_nat = preprocess_for_processing(
+            target_img, use_native_scale=True,
+            bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+            norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+            manual_background=manual_tar_bg,
+        )
+        ref_nat = preprocess_for_processing(
+            reference_img, use_native_scale=True,
+            bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+            norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+            manual_background=manual_ref_bg,
+        )
     tgt_gray = extract_single_channel(tgt_nat, tgt_chan)
     ref_gray = extract_single_channel(ref_nat, ref_chan)
     labels = np.unique(masks); labels = labels[labels > 0]
@@ -680,13 +705,11 @@ def compute_radial_peak_difference(
     min_pct: float = 60.0,
     max_pct: float = 120.0,
     *,
-    algo: str = "global_max",
+    algo: str = "first_local_top",
     sg_window: int = 5,
     sg_poly: int = 2,
-    shoulder_slope_tol: float = 0.005,
-    shoulder_curv_tol: float = 0.001,
-    shoulder_plateau_span: int = 2,
-    shoulder_plateau_tol: float = 0.02,
+
+    peak_slope_eps_rel: float = 0.0001,
 ) -> pd.DataFrame:
     """
     Compute for each label the center_pct where mean_target and mean_reference reach maximum
@@ -756,12 +779,13 @@ def compute_radial_peak_difference(
     
     def _first_local_top(series_center_pct: pd.Series, series_value: pd.Series) -> float:
         """
-        Find the first local maximum when scanning from highest center_pct to lowest within range.
-        If no local maximum is found, fall back to global maximum index.
-        Returns the center_pct of the selected peak, or NaN if unavailable.
+        SG平滑後の「右端（高%側）から最初に現れる真のピーク」を返す。
+        条件:
+
+         右→左: 「負（右下がり）」→「0（平坦）」への遷移点を優先検出
+
         """
         try:
-            # Ensure sorted by center_pct ascending for consistent neighbor logic
             dfv = pd.DataFrame({
                 'center_pct': series_center_pct.to_numpy(dtype=float),
                 'val': series_value.to_numpy(dtype=float),
@@ -769,17 +793,41 @@ def compute_radial_peak_difference(
             if dfv.empty:
                 return np.nan
             cp = dfv['center_pct'].to_numpy()
-            v = dfv['val'].to_numpy()
-            n = v.size
-            # scan from right (highest %) to left, ignore endpoints for proper local maximum
-            for i in range(n - 2, 0, -1):
-                left = v[i - 1]
-                right = v[i + 1]
-                if np.isfinite(v[i]) and np.isfinite(left) and np.isfinite(right):
-                    # local top (allow plateau peak as >= neighbors)
-                    if v[i] >= left and v[i] >= right:
-                        return float(cp[i])
-            # fallback to global max
+            v_raw = dfv['val'].to_numpy()
+            n = v_raw.size
+            if n < 3:
+                # サンプルが少なすぎる場合は最大値
+                j = int(np.nanargmax(v_raw)) if np.any(np.isfinite(v_raw)) else None
+                return float(cp[j]) if j is not None else np.nan
+
+            # Savitzky–Golay 平滑（NaNセーフ）
+            win = int(sg_window) if n >= int(sg_window) else 3
+            v = _savgol_nan_safe(v_raw, win=win, poly=int(sg_poly))
+
+            # 閾値のスケールをデータに合わせて決定
+            v_min, v_max = float(np.nanmin(v)), float(np.nanmax(v))
+            rng = max(1e-12, v_max - v_min)
+            cp_rng = max(1e-12, float(np.nanmax(cp) - np.nanmin(cp)))
+            slope_eps = float(peak_slope_eps_rel) * rng / cp_rng
+
+            # 導関数（%軸での勾配）
+            dv = np.gradient(v, cp)
+
+
+
+            # 1) 真の局所極大（+→- の符号反転）を右から探索
+            #    スロープ途中の明瞭なピークを拾うため、最小高さしきい値を低めに設定
+            pos_tol = 2.0 * slope_eps
+            min_rel_height = 0.03 * rng  # データレンジの3%相当以上の高さ
+            abs_floor = v_min + min_rel_height
+            for i in range(n - 2, 1, -1):
+                if not (np.isfinite(v[i]) and np.isfinite(dv[i]) and np.isfinite(dv[i - 1])):
+                    continue
+                if v[i] >= abs_floor and dv[i - 1] >= pos_tol and dv[i] <= -pos_tol:
+                    # 極大は (i-1,i) 間にある。右寄りにするため i を返す
+                    return float(cp[i])
+
+            # 2) フォールバック：平滑列のグローバル最大
             j = int(np.nanargmax(v)) if np.any(np.isfinite(v)) else None
             return float(cp[j]) if j is not None else np.nan
         except Exception:
@@ -787,27 +835,28 @@ def compute_radial_peak_difference(
 
     algo_s = str(algo or "global_max").lower()
 
-    # --- Savitzky–Golay support and shoulder detection helpers ---
-    def _prep_series_sorted(series_center_pct: pd.Series, series_value: pd.Series):
-        dfv = pd.DataFrame({
-            'center_pct': series_center_pct.to_numpy(dtype=float),
-            'val': series_value.to_numpy(dtype=float),
-        }).dropna(subset=['center_pct', 'val']).sort_values('center_pct')
-        if dfv.empty:
-            return None, None
-        return dfv['center_pct'].to_numpy(), dfv['val'].to_numpy()
 
     def _savgol_nan_safe(y: np.ndarray, win: int, poly: int) -> np.ndarray:
+        """NaNセーフなSG。win<3 の場合は平滑なし(生値を返す)。"""
         y = y.astype(float)
         n = y.size
         if n < 3:
             return y
+        # SG OFF when window < 3
+        if win is None or int(win) < 3:
+            return y
+        win = int(win)
         # window is odd and <= n
-        win = max(3, min(win, n if n % 2 == 1 else n - 1))
+        if win > n:
+            win = n if (n % 2 == 1) else n - 1
         if win % 2 == 0:
             win -= 1
+        if win < 3:
+            return y
         if win <= poly:
-            poly = max(1, min(poly, win - 1))
+            poly = max(1, min(int(poly), win - 1))
+        else:
+            poly = int(poly)
         m = np.isfinite(y)
         if m.sum() < 2:
             return y
@@ -816,37 +865,7 @@ def compute_radial_peak_difference(
         ys = savgol_filter(y_fill, window_length=win, polyorder=poly, mode="interp")
         return ys
 
-    def _first_shoulder(series_center_pct: pd.Series, series_value: pd.Series) -> float:
-        cp, v = _prep_series_sorted(series_center_pct, series_value)
-        if cp is None:
-            return np.nan
-        n = v.size
-        if n < 5:
-            return _first_local_top(series_center_pct, series_value)
-        # light smoothing
-        v_s = _savgol_nan_safe(v, win=int(sg_window) if n >= int(sg_window) else 3, poly=int(sg_poly))
-        # normalize for relative thresholds
-        v_min, v_max = float(np.nanmin(v_s)), float(np.nanmax(v_s))
-        rng = max(1e-12, v_max - v_min)
-        v_n = (v_s - v_min) / rng
-        dv = np.gradient(v_n, cp)
-        d2 = np.gradient(dv, cp)
-        slope_tol = float(shoulder_slope_tol)
-        curv_tol = float(shoulder_curv_tol)
-        plateau_span = int(shoulder_plateau_span)
-        plateau_tol = float(shoulder_plateau_tol)
-        # scan from right (highest %) to left
-        for i in range(n - 2, 0, -1):
-            if dv[i - 1] > slope_tol and abs(dv[i]) <= slope_tol and d2[i] < -curv_tol:
-                return float(cp[i])
-        # plateau assistant
-        for i in range(n - 2, 0, -1):
-            j2 = min(n - 1, i + plateau_span)
-            if dv[i - 1] > slope_tol:
-                window = v_n[i:j2 + 1]
-                if window.size >= 2 and (np.nanmax(window) - np.nanmin(window)) <= plateau_tol:
-                    return float(cp[i])
-        return _first_local_top(series_center_pct, series_value)
+    # Note: 'first_shoulder' algorithm has been removed by request.
 
     for lab in labels:
         lab_data = df_filtered[df_filtered["label"] == lab]
@@ -855,9 +874,6 @@ def compute_radial_peak_difference(
             # First local maximum scanning from upper bound to lower bound
             max_target_pct = _first_local_top(lab_data["center_pct"], lab_data["mean_target"])
             max_reference_pct = _first_local_top(lab_data["center_pct"], lab_data["mean_reference"])
-        elif algo_s == "first_shoulder":
-            max_target_pct = _first_shoulder(lab_data["center_pct"], lab_data["mean_target"])
-            max_reference_pct = _first_shoulder(lab_data["center_pct"], lab_data["mean_reference"])
         else:
             # Global maximum within range (current behavior)
             valid_target = lab_data.dropna(subset=["mean_target"])
