@@ -7,7 +7,7 @@ Main modules:
 - visualization: Overlay generation and plotting utilities
 """
 
-__version__ = "0.2.0"
+__version__ = "1.0.0"
 
 # Import constants
 LABEL_SCALE = 1.8

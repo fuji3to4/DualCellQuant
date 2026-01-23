@@ -5,6 +5,8 @@ A stepwise Gradio app for per-cell quantification with Cellpose-SAM segmentation
 - Dual images: Target + Reference images → AND mask → ratios and stats
 - Single image: One image → (optional) Radial mask → Mask → stats
 
+website:[DualCellQuant](https://dna00.bio.kyutech.ac.jp/dualcellquant/)
+
 ## Features ✨
 
 - 🧠 Cellpose-SAM segmentation (lazy model load, optional GPU)
@@ -20,6 +22,22 @@ A stepwise Gradio app for per-cell quantification with Cellpose-SAM segmentation
 - 🧹 Optional Preprocess: Background correction (Rolling ball) and Normalization (z-score, robust z, min-max, percentile)
   - Default: OFF
   - Preview processed images and download 8-bit TIFFs
+
+## Installation 📥
+
+- Prereqs: Python 3.11+; optional GPU for Cellpose-SAM; install PyTorch appropriate for your CUDA/CPU setup first (see https://pytorch.org/get-started/locally/)
+- Poetry
+  - `poetry install`
+  - `poetry run python dualCellQuant.py`
+- Pip
+  - `pip install .`
+  - `python dualCellQuant.py`
+- Pip (direct from GitHub)
+  - `pip install "git+https://github.com/fuji3to4/DualCellQuant.git"`
+- Optional: mount under FastAPI at `/dualcellquant`: `poetry run uvicorn serve:app --port 7860`
+
+Then open the local Gradio URL shown in the terminal.
+
 
 ## Workflows ▶️
 
@@ -112,28 +130,6 @@ Outputs: label mask TIFF, mask TIFF, table CSV, image overlay previews.
   - AND of selected masks; per-cell mean/sum for target/reference on AND mask and on full cell region
   - Ratio image limited to AND region, robustly normalized by 1–99 percentiles for visualization; NaN where reference==0
 
-## Run locally 🚀
-
-The app is a single-file Gradio UI. With Poetry:
-
-```pwsh
-poetry install
-poetry run python .\dualCellQuant.py
-```
-
-Or with a plain environment (ensure Python 3.11+ and dependencies in `pyproject.toml`):
-
-```pwsh
-python .\dualCellQuant.py
-```
-
-Then open the local Gradio URL shown in the terminal.
-
-Optionally, you can mount the app under FastAPI at `/dualcellquant`:
-
-```pwsh
-poetry run uvicorn serve:app --port 7860
-```
 
 
 ## Outputs 📦
