@@ -1,27 +1,27 @@
 # 🔬 DualCellQuant
 
-A stepwise Gradio app for per-cell quantification with Cellpose-SAM segmentation and flexible masking. Two workflows are available via tabs in `dualCellQuant.py`:
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18347379.svg)](https://doi.org/10.5281/zenodo.18347379)
 
-- Dual images: Target + Reference images → AND mask → ratios and stats
-- Single image: One image → (optional) Radial mask → Mask → stats
+A web-based tool for **objective and reproducible quantification** of fluorescence intensity in the plasma membrane region. DualCellQuant integrates **Cellpose-SAM** automated segmentation with **Euclidean distance transform (EDT)–based radial normalization** to define membrane regions at a fixed normalized distance from the cell boundary, enabling accurate per-cell quantification without manual selection bias.
+
+Two workflows are available via tabs in `dualCellQuant.py`:
+
+- **Dual images**: Target + Reference images → AND mask → ratios and stats
+- **Single image**: One image → (optional) Radial mask → Mask → stats
 
 website:[DualCellQuant](https://dna00.bio.kyutech.ac.jp/dualcellquant/)
 
 ## Features ✨
 
-- 🧠 Cellpose-SAM segmentation (lazy model load, optional GPU)
-- 🌀 Independent, shape-aware Radial mask (optional)
-- 🎯 Target/Reference masking with multiple strategies
+- 🧠 **Cellpose-SAM automated segmentation**: Robust cell boundary detection (lazy model load, optional GPU)
+- 🌀 **EDT-based radial normalization**: Shape-aware membrane region definition at normalized distances from cell boundaries (0% = center, 100% = boundary, >100% = expansion into background)
+- 🎯 **Flexible masking strategies**: Reference-guided membrane region definition for robust quantification even with low-intensity target signals
   - none / global percentile / global Otsu / per-cell percentile / per-cell Otsu
-  - Optional restriction to the Radial ROI (per label)
-- 📊 Final integration and per-cell statistics
-  - AND(Target, Reference[, Radial])
-  - Mean/Sum per mask and per whole cell
-  - Target/Reference ratio image and CSV export
+  - Optional restriction to the radial ROI (per label)
+- 📊 **Per-cell statistics**: AND(Target, Reference[, Radial]) → Mean/Sum per mask and per whole cell → Target/Reference ratio image and CSV export
 - 🖼️ Clear overlays with cell IDs and downloadable NumPy arrays for all masks
 - 🧹 Optional Preprocess: Background correction (Rolling ball) and Normalization (z-score, robust z, min-max, percentile)
   - Default: OFF
-  - Preview processed images and download 8-bit TIFFs
 
 ## Installation 📥
 
@@ -63,10 +63,10 @@ Outputs: label mask TIFF, mask TIFF, table CSV, image overlay previews.
 - Choose source image/channel and model thresholds
 - Outputs: label mask (.npy), overlays
 
-### 2. 🌀 (Optional) Build Radial mask
+### 2. 🌀 (Optional) Build Radial mask (EDT-based)
 
-- Shape-aware ring between Inner% (0=center) and Outer% (100=boundary)
-- Outer >100% expands outward into background only; labels are propagated via nearest cell
+- **EDT-based radial normalization**: Per-cell Euclidean distance transform (EDT) normalized to [0..1] defines shape-aware ring between Inner% (0=center) and Outer% (100=boundary)
+- Outer >100% expands outward into background only; labels are propagated via nearest cell EDT
 - Outputs: radial mask (bool .npy), radial labels (.npy), overlay
 
 ### 3. 🎯 Apply Target mask
