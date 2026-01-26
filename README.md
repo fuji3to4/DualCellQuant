@@ -27,14 +27,30 @@ website:[DualCellQuant](https://dna00.bio.kyutech.ac.jp/dualcellquant/)
 
 - Prereqs: Python 3.11+; optional GPU for Cellpose-SAM; install PyTorch appropriate for your CUDA/CPU setup first (see https://pytorch.org/get-started/locally/)
 - Poetry
-  - `poetry install`
-  - `poetry run python dualCellQuant.py`
+
+```pwsh
+poetry install
+poetry run python dualCellQuant.py
+```
+
 - Pip
-  - `pip install .`
-  - `python dualCellQuant.py`
+
+```pwsh
+pip install .
+python dualCellQuant.py
+```
+
 - Pip (direct from GitHub)
-  - `pip install "git+https://github.com/fuji3to4/DualCellQuant.git"`
-- Optional: mount under FastAPI at `/dualcellquant`: `poetry run uvicorn serve:app --port 7860`
+
+```pwsh
+pip install "git+https://github.com/fuji3to4/DualCellQuant.git"
+```
+
+- Optional: mount under FastAPI at `/dualcellquant`: 
+
+```pwsh
+poetry run uvicorn serve:app --port 7860
+```
 
 Then open the local Gradio URL shown in the terminal.
 
