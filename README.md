@@ -38,6 +38,27 @@ website:[DualCellQuant](https://dna00.bio.kyutech.ac.jp/dualcellquant/)
 
 Then open the local Gradio URL shown in the terminal.
 
+### Troubleshooting: CUDA issues
+
+If CUDA is not detected or PyTorch is not using GPU:
+
+1. Check CUDA version: `nvidia-smi`
+2. Reinstall torch/torchvision matching your CUDA version (replace `cu130` with your version, e.g., `cu126`, `cu128`):
+
+```pwsh
+poetry run pip uninstall -y torch torchvision
+poetry run pip install torch==2.10.0+cu130 torchvision==0.25.0+cu130 `
+  --index-url https://download.pytorch.org/whl/cu130
+```
+
+3. Verify installation:
+
+```pwsh
+poetry run python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
+```
+
+If `torch.cuda.is_available()` returns `True`, GPU support is enabled.
+
 
 ## Workflows ▶️
 
