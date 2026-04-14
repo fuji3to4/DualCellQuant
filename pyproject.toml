@@ -1,32 +1,43 @@
-[tool.poetry]
+[project]
 name = "dualcellquant"
 version = "1.0.0"
 description = ""
-authors = ["fuji3to4 <sfujii@bio.kyutech.ac.jp>"]
+authors = [{ name = "fuji3to4", email = "sfujii@bio.kyutech.ac.jp" }]
+requires-python = ">=3.11,<4"
 readme = "README.md"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "torch>=2.8,<3.0",
+    "torchvision>=0.23,<1.0",
+    "cellpose>=4.0.6,<5",
+    "gradio>=5.43.1",
+    "pandas>=2.3.1,<3",
+    "scipy>=1.16.1,<2",
+    "scikit-image>=0.25.2,<0.26",
+    "fastapi>=0.116.1,<0.117",
+    "uvicorn[standard]>=0.35.0,<0.36",
+    "matplotlib>=3.9.2,<4",
+    "jupyter>=1.1.1,<2",
+    "tabulate>=0.9.0,<0.10",
+]
 
-[tool.poetry.dependencies]
-python = ">=3.11,<3.14"
-torch = ">=2.8,<3.0"
-torchvision = ">=0.23,<1.0"
-cellpose = "^4.0.6"
-gradio = "5.43.1"
-pandas = "^2.3.1"
-scipy = "^1.16.1"
-scikit-image = "^0.25.2"
-fastapi = "^0.116.1"
-uvicorn = {extras = ["standard"], version = "^0.35.0"}
-matplotlib = "^3.9.2"
-jupyter = "^1.1.1"
-tabulate = "^0.9.0"
+[[tool.uv.index]]
+name = "torch_cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
 
+[tool.uv.sources]
+torch = { index = "torch_cu130" }
+torchvision = { index = "torch_cu130" }
 
-
-[[tool.poetry.source]]
-name = "torch_cu129"
-url = "https://download.pytorch.org/whl/cu129"
-priority = "explicit"
+[tool.uv.build-backend]
+module-root = ""
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["uv_build>=0.11.2,<0.12.0"]
+build-backend = "uv_build"

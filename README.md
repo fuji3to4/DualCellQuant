@@ -26,11 +26,11 @@ website:[DualCellQuant](https://dna00.bio.kyutech.ac.jp/dualcellquant/)
 ## Installation 📥
 
 - Prereqs: Python 3.11+; optional GPU for Cellpose-SAM; install PyTorch appropriate for your CUDA/CPU setup first (see https://pytorch.org/get-started/locally/)
-- Poetry
+- uv
 
 ```pwsh
-poetry install
-poetry run python dualCellQuant.py
+uv sync
+uv run python dualCellQuant.py
 ```
 
 - Pip
@@ -49,10 +49,10 @@ pip install "git+https://github.com/fuji3to4/DualCellQuant.git"
 - Optional: mount under FastAPI at `/dualcellquant`: 
 
 ```pwsh
-poetry run uvicorn serve:app --port 7860
+uv run uvicorn serve:app
 ```
 
-Then open the local Gradio URL shown in the terminal.
+[http://127.0.0.1:8000/dualcellquant](http://127.0.0.1:8000/dualcellquant)
 
 ### Troubleshooting: CUDA issues
 
@@ -62,15 +62,15 @@ If CUDA is not detected or PyTorch is not using GPU:
 2. Reinstall torch/torchvision matching your CUDA version (replace `cu130` with your version, e.g., `cu126`, `cu128`):
 
 ```pwsh
-poetry run pip uninstall -y torch torchvision
-poetry run pip install torch==2.10.0+cu130 torchvision==0.25.0+cu130 `
+uv pip uninstall -y torch torchvision
+uv pip install torch==2.11.0+cu130 torchvision==0.26.0+cu130 `
   --index-url https://download.pytorch.org/whl/cu130
 ```
 
 3. Verify installation:
 
 ```pwsh
-poetry run python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
+uv run python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
 ```
 
 If `torch.cuda.is_available()` returns `True`, GPU support is enabled.
@@ -180,3 +180,39 @@ Outputs: label mask TIFF, mask TIFF, table CSV, image overlay previews.
 - Radial outer >100% includes background near the cell. As of now, T/R uses only pixels with Reference > 0, to avoid NaN/inf. If you want Target/Reference masks computed strictly within ≤100% (inside-cell only), consider adding a toggle to clip ROI at 100%.
 - No persistent project/session saving; use the exported `.npy`/`.csv` files to reproduce results.
 - The Single image flow computes single-channel statistics only (no ratio). Ratios remain in the Dual images flow.
+
+## Citation
+
+If you use DualCellQuant in your work, please cite both the software and the paper:
+
+Fujii, S., Takaki, K., & Sueda, S. (2026). Dual-color image analysis for quantifying fluorescence intensity in plasma membrane region of cells. *Analytical Sciences*. https://doi.org/10.1007/s44211-026-00908-y
+
+Fujii, S. (2026). *fuji3to4/DualCellQuant: v1.0.0* (v1.0.0). Zenodo. https://doi.org/10.5281/zenodo.18347379
+
+BibTeX:
+
+```bibtex
+@article{fujii_2026_dual_color_image_analysis,
+  author       = {Fujii, Satoshi and Takaki, Keita and Sueda, Sinji},
+  title        = {Dual-color image analysis for quantifying fluorescence intensity in plasma membrane region of cells},
+  journal      = {Analytical Sciences},
+  year         = {2026},
+  doi          = {10.1007/s44211-026-00908-y},
+  url          = {https://doi.org/10.1007/s44211-026-00908-y}
+}
+
+@software{fujii_2026_dualcellquant_v1_0_0,
+  author       = {Fujii, Satoshi},
+  title        = {fuji3to4/DualCellQuant: v1.0.0},
+  year         = {2026},
+  version      = {v1.0.0},
+  publisher    = {Zenodo},
+  doi          = {10.5281/zenodo.18347379},
+  url          = {https://doi.org/10.5281/zenodo.18347379}
+}
+```
+
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
