@@ -22,7 +22,19 @@ import dualcellquant as dcq
 SETTINGS_KEY = "dcq_settings_v1"
 
 def build_ui():
-    with gr.Blocks(title="DualCellQuant") as demo:
+    with gr.Blocks(
+        title="DualCellQuant",
+        head="""
+        <!-- Google tag (gtag.js) -->
+        <script async src="https://www.googletagmanager.com/gtag/js?id=G-6BEL97H6FZ"></script>
+        <script>
+          window.dataLayer = window.dataLayer || [];
+          function gtag(){dataLayer.push(arguments);}
+          gtag('js', new Date());
+          gtag('config', 'G-6BEL97H6FZ');
+        </script>
+        """
+    ) as demo:
         gr.Markdown(
             """
             # 🔬 **DualCellQuant**
