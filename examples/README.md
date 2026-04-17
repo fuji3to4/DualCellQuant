@@ -2,7 +2,7 @@
 
 A complete Jupyter Notebook is provided to reproduce the full analysis workflow from the paper **"Dual-color image analysis for quantifying fluorescence intensity in plasma membrane region of cells"** ([Analytical Sciences, 2026](https://doi.org/10.1007/s44211-026-00908-y)):
 
-👉 **[examples/run_reproduction_pipeline.ipynb](examples/run_reproduction_pipeline.ipynb)** - Complete batch processing pipeline
+👉 **[run_reproduction_pipeline.ipynb](run_reproduction_pipeline.ipynb)** - Complete batch processing pipeline
 
 This Notebook implements the paper's analytical workflow step-by-step:
 
@@ -19,7 +19,7 @@ This Notebook implements the paper's analytical workflow step-by-step:
 
 **Local Environment (VS Code / Jupyter Lab):**
 ```bash
-jupyter notebook examples/run_reproduction_pipeline.ipynb
+jupyter notebook run_reproduction_pipeline.ipynb
 ```
 
 **Run on Google Colab** (no installation required):
