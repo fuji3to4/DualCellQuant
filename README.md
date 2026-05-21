@@ -1,42 +1,79 @@
 # 🔬 DualCellQuant
 
-A stepwise Gradio app for per-cell quantification with Cellpose-SAM segmentation and flexible masking. Two workflows are available via tabs in `dualCellQuant.py`:
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18347379.svg)](https://doi.org/10.5281/zenodo.18347379)
 
-- Dual images: Target + Reference images → AND mask → ratios and stats
-- Single image: One image → (optional) Radial mask → Mask → stats
+A web-based tool for **objective and reproducible quantification** of fluorescence intensity in the plasma membrane region. DualCellQuant integrates **Cellpose-SAM** automated segmentation with **Euclidean distance transform (EDT)–based radial normalization** to define membrane regions at a fixed normalized distance from the cell boundary, enabling accurate per-cell quantification without manual selection bias.
+
+Two workflows are available via tabs in `dualCellQuant.py`:
+
+- **Dual images**: Target + Reference images → AND mask → ratios and stats
+- **Single image**: One image → (optional) Radial mask → Mask → stats
 
 website:[DualCellQuant](https://dna00.bio.kyutech.ac.jp/dualcellquant/)
 
 ## Features ✨
 
-- 🧠 Cellpose-SAM segmentation (lazy model load, optional GPU)
-- 🌀 Independent, shape-aware Radial mask (optional)
-- 🎯 Target/Reference masking with multiple strategies
+- 🧠 **Cellpose-SAM automated segmentation**: Robust cell boundary detection (lazy model load, optional GPU)
+- 🌀 **EDT-based radial normalization**: Shape-aware membrane region definition at normalized distances from cell boundaries (0% = center, 100% = boundary, >100% = expansion into background)
+- 🎯 **Flexible masking strategies**: Reference-guided membrane region definition for robust quantification even with low-intensity target signals
   - none / global percentile / global Otsu / per-cell percentile / per-cell Otsu
-  - Optional restriction to the Radial ROI (per label)
-- 📊 Final integration and per-cell statistics
-  - AND(Target, Reference[, Radial])
-  - Mean/Sum per mask and per whole cell
-  - Target/Reference ratio image and CSV export
+  - Optional restriction to the radial ROI (per label)
+- 📊 **Per-cell statistics**: AND(Target, Reference[, Radial]) → Mean/Sum per mask and per whole cell → Target/Reference ratio image and CSV export
 - 🖼️ Clear overlays with cell IDs and downloadable NumPy arrays for all masks
 - 🧹 Optional Preprocess: Background correction (Rolling ball) and Normalization (z-score, robust z, min-max, percentile)
   - Default: OFF
-  - Preview processed images and download 8-bit TIFFs
 
 ## Installation 📥
 
 - Prereqs: Python 3.11+; optional GPU for Cellpose-SAM; install PyTorch appropriate for your CUDA/CPU setup first (see https://pytorch.org/get-started/locally/)
-- Poetry
-  - `poetry install`
-  - `poetry run python dualCellQuant.py`
-- Pip
-  - `pip install .`
-  - `python dualCellQuant.py`
-- Pip (direct from GitHub)
-  - `pip install "git+https://github.com/fuji3to4/DualCellQuant.git"`
-- Optional: mount under FastAPI at `/dualcellquant`: `poetry run uvicorn serve:app --port 7860`
+- uv
 
-Then open the local Gradio URL shown in the terminal.
+```pwsh
+uv sync
+uv run python dualCellQuant.py
+```
+
+- Pip
+
+```pwsh
+pip install .
+python dualCellQuant.py
+```
+
+- Pip (direct from GitHub)
+
+```pwsh
+pip install "git+https://github.com/fuji3to4/DualCellQuant.git"
+```
+
+- Optional: mount under FastAPI at `/dualcellquant`: 
+
+```pwsh
+uv run uvicorn serve:app
+```
+
+[http://127.0.0.1:8000/dualcellquant](http://127.0.0.1:8000/dualcellquant)
+
+### Troubleshooting: CUDA issues
+
+If CUDA is not detected or PyTorch is not using GPU:
+
+1. Check CUDA version: `nvidia-smi`
+2. Reinstall torch/torchvision matching your CUDA version (replace `cu130` with your version, e.g., `cu126`, `cu128`):
+
+```pwsh
+uv pip uninstall -y torch torchvision
+uv pip install torch==2.11.0+cu130 torchvision==0.26.0+cu130 `
+  --index-url https://download.pytorch.org/whl/cu130
+```
+
+3. Verify installation:
+
+```pwsh
+uv run python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
+```
+
+If `torch.cuda.is_available()` returns `True`, GPU support is enabled.
 
 
 ## Workflows ▶️
@@ -63,10 +100,10 @@ Outputs: label mask TIFF, mask TIFF, table CSV, image overlay previews.
 - Choose source image/channel and model thresholds
 - Outputs: label mask (.npy), overlays
 
-### 2. 🌀 (Optional) Build Radial mask
+### 2. 🌀 (Optional) Build Radial mask (EDT-based)
 
-- Shape-aware ring between Inner% (0=center) and Outer% (100=boundary)
-- Outer >100% expands outward into background only; labels are propagated via nearest cell
+- **EDT-based radial normalization**: Per-cell Euclidean distance transform (EDT) normalized to [0..1] defines shape-aware ring between Inner% (0=center) and Outer% (100=boundary)
+- Outer >100% expands outward into background only; labels are propagated via nearest cell EDT
 - Outputs: radial mask (bool .npy), radial labels (.npy), overlay
 
 ### 3. 🎯 Apply Target mask
@@ -143,3 +180,56 @@ Outputs: label mask TIFF, mask TIFF, table CSV, image overlay previews.
 - Radial outer >100% includes background near the cell. As of now, T/R uses only pixels with Reference > 0, to avoid NaN/inf. If you want Target/Reference masks computed strictly within ≤100% (inside-cell only), consider adding a toggle to clip ROI at 100%.
 - No persistent project/session saving; use the exported `.npy`/`.csv` files to reproduce results.
 - The Single image flow computes single-channel statistics only (no ratio). Ratios remain in the Dual images flow.
+
+
+
+## Citation
+
+If you use DualCellQuant in your work, please cite both the software and the paper:
+
+### Paper
+
+Fujii, S., Takaki, K., & Sueda, S. (2026). Dual-color image analysis for quantifying fluorescence intensity in plasma membrane region of cells. *Analytical Sciences*. https://doi.org/10.1007/s44211-026-00908-y
+
+👉 **[examples/run_reproduction_pipeline.ipynb](examples/run_reproduction_pipeline.ipynb)** - Complete batch processing pipeline [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fuji3to4/dualCellQuant/blob/main/examples/run_reproduction_pipeline.ipynb)
+
+
+### Software
+
+Fujii, S. (2026). *fuji3to4/DualCellQuant: v1.0.0* (v1.0.0). Zenodo. https://doi.org/10.5281/zenodo.18347379
+
+BibTeX:
+
+```bibtex
+@article{fujii_2026_dual_color_image_analysis,
+  author       = {Fujii, Satoshi and Takaki, Keita and Sueda, Sinji},
+  title        = {Dual-color image analysis for quantifying fluorescence intensity in plasma membrane region of cells},
+  journal      = {Analytical Sciences},
+  year         = {2026},
+  doi          = {10.1007/s44211-026-00908-y},
+  url          = {https://doi.org/10.1007/s44211-026-00908-y}
+}
+
+@misc{fujii_2026_dualcellquant_notebook,
+  author       = {Fujii, Satoshi},
+  title        = {DualCellQuant - Batch Processing Workflow (Paper Reproduction)},
+  year         = {2026},
+  publisher    = {GitHub},
+  howpublished = {\url{https://github.com/fuji3to4/dualCellQuant/blob/main/examples/run_reproduction_pipeline.ipynb}}
+}
+
+@software{fujii_2026_dualcellquant_v1_0_0,
+  author       = {Fujii, Satoshi},
+  title        = {fuji3to4/DualCellQuant: v1.0.0},
+  year         = {2026},
+  version      = {v1.0.0},
+  publisher    = {Zenodo},
+  doi          = {10.5281/zenodo.18347379},
+  url          = {https://doi.org/10.5281/zenodo.18347379}
+}
+```
+
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.

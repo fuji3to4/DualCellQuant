@@ -16,6 +16,7 @@ __pycache__/
 *.ubuntu
 poetry.lock
 uv.lock
+.python-version
 REFACTORING_COMPLETE.md
 README_REFACTOR.md
 

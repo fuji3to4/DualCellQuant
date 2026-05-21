@@ -51,6 +51,22 @@ def build_ui():
             One-click pipeline (Steps 1→2→3) with advanced radial profile and peak difference analysis.
             """
         )
+        gr.Markdown(
+            """
+                        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:6px 0 10px 0;">
+                            <a href="https://github.com/fuji3to4/DualCellQuant" target="_blank" rel="noopener noreferrer" aria-label="DualCellQuant GitHub repository" style="display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid #d0d7de;border-radius:999px;text-decoration:none;color:#24292f;background:#f6f8fa;font-weight:600;">
+                                <img src="https://cdn.jsdelivr.net/npm/simple-icons@v11/icons/github.svg" alt="GitHub" width="16" height="16" style="display:block;">
+                                <span>GitHub</span>
+                            </a>
+                            <a href="https://doi.org/10.1007/s44211-026-00908-y" target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid #d0d7de;border-radius:999px;text-decoration:none;color:#24292f;background:#fff;font-weight:600;">
+                                <span>📄</span><span>Paper</span>
+                            </a>
+                        </div>
+                        <div style="font-size:0.95em;line-height:1.5;color:#4b5563;margin-bottom:8px;">
+                            <strong>Cite:</strong> Fujii, S., Takaki, K., &amp; Sueda, S. (2026). <em>Dual-color image analysis for quantifying fluorescence intensity in plasma membrane region of cells</em>. <em>Analytical Sciences</em>. <a href="https://doi.org/10.1007/s44211-026-00908-y" target="_blank" rel="noopener noreferrer">https://doi.org/10.1007/s44211-026-00908-y</a>
+                        </div>
+            """
+        )
         
         # Shared state variables
         masks_state = gr.State()
