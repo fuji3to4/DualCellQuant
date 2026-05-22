@@ -35,37 +35,28 @@ def build_ui():
         </script>
         """
     ) as demo:
-        gr.Markdown(
-            """
-            # 🔬 **DualCellQuant**
-            *Segment, filter, and compare cells across two fluorescence channels*
+        gr.HTML(
+            '''
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                <h1 style="margin:0;font-size:2em;line-height:1.2;">🔬 <strong>DualCellQuant</strong></h1>
+                <a href="https://github.com/fuji3to4/DualCellQuant" target="_blank" rel="noopener noreferrer" aria-label="GitHub" style="text-decoration:none;line-height:1;display:inline-flex;align-items:center;">
+                    <img src="https://cdn.jsdelivr.net/npm/simple-icons@v11/icons/github.svg" alt="GitHub" width="20" height="20">
+                </a>
+                <a href="https://doi.org/10.1007/s44211-026-00908-y" target="_blank" rel="noopener noreferrer" aria-label="Paper DOI" style="text-decoration:none;line-height:1;font-size:1.1em;display:inline-flex;align-items:center;">📄</a>
+            </div>
 
-
-            1. Run Cellpose-SAM to obtain segmentation masks.
-            2. Apply Target/Reference masks.
-            3. Integrate (Preprocess applied only here) and view results.
-            4. Build Radial mask & Quantify
-            
-            **📋 Step-by-Step**: Detailed control (Steps 1→2→3→4)  
-            **⚡ Radial Profile**: 
-            One-click pipeline (Steps 1→2→3) with advanced radial profile and peak difference analysis.
-            """
-        )
-        gr.Markdown(
-            """
-                        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:6px 0 10px 0;">
-                            <a href="https://github.com/fuji3to4/DualCellQuant" target="_blank" rel="noopener noreferrer" aria-label="DualCellQuant GitHub repository" style="display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid #d0d7de;border-radius:999px;text-decoration:none;color:#24292f;background:#f6f8fa;font-weight:600;">
-                                <img src="https://cdn.jsdelivr.net/npm/simple-icons@v11/icons/github.svg" alt="GitHub" width="16" height="16" style="display:block;">
-                                <span>GitHub</span>
-                            </a>
-                            <a href="https://doi.org/10.1007/s44211-026-00908-y" target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid #d0d7de;border-radius:999px;text-decoration:none;color:#24292f;background:#fff;font-weight:600;">
-                                <span>📄</span><span>Paper</span>
-                            </a>
-                        </div>
-                        <div style="font-size:0.95em;line-height:1.5;color:#4b5563;margin-bottom:8px;">
-                            <strong>Cite:</strong> Fujii, S., Takaki, K., &amp; Sueda, S. (2026). <em>Dual-color image analysis for quantifying fluorescence intensity in plasma membrane region of cells</em>. <em>Analytical Sciences</em>. <a href="https://doi.org/10.1007/s44211-026-00908-y" target="_blank" rel="noopener noreferrer">https://doi.org/10.1007/s44211-026-00908-y</a>
-                        </div>
-            """
+            <div style="margin:6px 0 10px 0;line-height:1.6;">
+                <p style="margin:0 0 10px 0;"><em>Segment, filter, and compare cells across two fluorescence channels</em></p>
+                <ol style="margin:0 0 10px 20px;padding:0;">
+                    <li>Run Cellpose-SAM to obtain segmentation masks.</li>
+                    <li>Apply Target/Reference masks.</li>
+                    <li>Integrate (Preprocess applied only here) and view results.</li>
+                    <li>Build Radial mask &amp; Quantify</li>
+                </ol>
+                <p style="margin:0;"><strong>📋 Step-by-Step</strong>: Detailed control (Steps 1→2→3→4)</p>
+                <p style="margin:0;"><strong>⚡ Radial Profile</strong>: One-click pipeline (Steps 1→2→3) with advanced radial profile and peak difference analysis.</p>
+            </div>
+            '''
         )
         
         # Shared state variables
