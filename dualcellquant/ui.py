@@ -25,6 +25,36 @@ def build_ui():
     with gr.Blocks(
         title="DualCellQuant",
         head="""
+                <meta charset="utf-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <meta name="description" content="DualCellQuant: objective and reproducible quantification of dual-channel fluorescence with Cellpose-SAM segmentation and radial profile analysis.">
+                <meta name="keywords" content="DualCellQuant, fluorescence quantification, Cellpose-SAM, radial profile, microscopy">
+                <meta name="author" content="DualCellQuant">
+                <meta name="robots" content="index,follow,max-image-preview:large">
+                <link rel="canonical" href="https://dna00.bio.kyutech.ac.jp/dualcellquant/">
+
+                <meta property="og:type" content="website">
+                <meta property="og:site_name" content="DualCellQuant">
+                <meta property="og:title" content="DualCellQuant">
+                <meta property="og:description" content="Dual-channel fluorescence quantification with Cellpose-SAM and radial profile analysis.">
+                <meta property="og:url" content="https://dna00.bio.kyutech.ac.jp/dualcellquant/">
+
+                <meta name="twitter:card" content="summary">
+                <meta name="twitter:title" content="DualCellQuant">
+                <meta name="twitter:description" content="Dual-channel fluorescence quantification with Cellpose-SAM and radial profile analysis.">
+
+                <script type="application/ld+json">
+                {
+                    "@context": "https://schema.org",
+                    "@type": "SoftwareApplication",
+                    "name": "DualCellQuant",
+                    "applicationCategory": "ScientificApplication",
+                    "url": "https://dna00.bio.kyutech.ac.jp/dualcellquant/",
+                    "codeRepository": "https://github.com/fuji3to4/DualCellQuant",
+                    "description": "Dual-channel fluorescence quantification with Cellpose-SAM segmentation and radial profile analysis."
+                }
+                </script>
+
         <!-- Google tag (gtag.js) -->
         <script async src="https://www.googletagmanager.com/gtag/js?id=G-6BEL97H6FZ"></script>
         <script>
