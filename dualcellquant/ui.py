@@ -136,8 +136,8 @@ def build_ui():
                                 gr.Examples(
                                     examples=[
                                         [
-                                            "https://github.com/fuji3to4/DualCellQuant/raw/main/examples/data/5.0_C001Z002.png",
-                                            "https://github.com/fuji3to4/DualCellQuant/raw/main/examples/data/5.0_C002Z002.png"
+                                            "https://github.com/fuji3to4/DualCellQuant/raw/main/examples/data/0.5_C001Z002.png",
+                                            "https://github.com/fuji3to4/DualCellQuant/raw/main/examples/data/0.5_C002Z002.png"
                                         ],
                                     ],
                                     inputs=[tgt, ref],
@@ -581,8 +581,8 @@ def build_ui():
                                 gr.Examples(
                                     examples=[
                                         [
-                                            "https://github.com/fuji3to4/DualCellQuant/raw/main/examples/data/5.0_C001Z002.png",
-                                            "https://github.com/fuji3to4/DualCellQuant/raw/main/examples/data/5.0_C002Z002.png"
+                                            "https://github.com/fuji3to4/DualCellQuant/raw/main/examples/data/0.5_C001Z002.png",
+                                            "https://github.com/fuji3to4/DualCellQuant/raw/main/examples/data/0.5_C002Z002.png"
                                         ],
                                     ],
                                     inputs=[tgt_quick, ref_quick],
