@@ -108,6 +108,251 @@ def radial_mask(
     rad_lbl_tiff = save_label_tiff(radial_labels, "radial_labels")
     return overlay, radial_total, radial_labels, rad_bool_tiff, rad_lbl_tiff
 
+def _radial_profile_axis_config(axis_mode: str):
+    mode = str(axis_mode).lower()
+    if mode == "pct":
+        return (
+            "pct",
+            "Radial % (0=center, 100=boundary)",
+            "_radial_profile.csv",
+            lambda di, dmax, dist_bg: 1.0 - (di / dmax),
+            lambda dist_bg, dmax: 1.0 + (dist_bg / dmax),
+        )
+    if mode == "px":
+        return (
+            "px",
+            "Signed radial px (0=boundary, <0=inside, >0=outside)",
+            "_radial_profile_px.csv",
+            lambda di, dmax, dist_bg: -(di - 1.0),
+            lambda dist_bg, dmax: dist_bg - 1.0,
+        )
+    raise ValueError(f"Unsupported radial axis mode: {axis_mode!r}")
+
+def _radial_profile_analysis_impl(
+    target_img: Image.Image,
+    reference_img: Image.Image,
+    masks: np.ndarray,
+    tgt_chan: int,
+    ref_chan: int,
+    start_value: float,
+    end_value: float,
+    window_size_value: float,
+    window_step_value: float,
+    pp_bg_enable: bool,
+    pp_bg_radius: int,
+    pp_norm_enable: bool,
+    pp_norm_method: str,
+    *,
+    bg_mode: str = "rolling",
+    bg_dark_pct: float = 5.0,
+    manual_tar_bg: float | None = None,
+    manual_ref_bg: float | None = None,
+    window_bins: int = 1,
+    show_errorbars: bool = True,
+    ratio_ref_epsilon: float = 0.0,
+    axis_mode: str = "pct",
+):
+    if masks is None:
+        raise ValueError("Segmentation masks not provided. Run segmentation first.")
+    labels = np.unique(masks); labels = labels[labels > 0]
+    if labels.size == 0:
+        raise ValueError("No cells found in masks.")
+
+    axis_suffix, x_label, csv_suffix, inside_transform, outside_transform = _radial_profile_axis_config(axis_mode)
+
+    # Preprocess images (skip if both BG and normalization are disabled to avoid double processing)
+    if not bool(pp_bg_enable) and not bool(pp_norm_enable):
+        tgt_nat = pil_to_numpy_native(target_img)
+        ref_nat = pil_to_numpy_native(reference_img)
+    else:
+        tgt_nat = preprocess_for_processing(
+            target_img, use_native_scale=True,
+            bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+            norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+            manual_background=manual_tar_bg,
+        )
+        ref_nat = preprocess_for_processing(
+            reference_img, use_native_scale=True,
+            bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+            norm_enable=pp_norm_enable, norm_method=pp_norm_method,
+            manual_background=manual_ref_bg,
+        )
+    tgt_gray = extract_single_channel(tgt_nat, tgt_chan)
+    ref_gray = extract_single_channel(ref_nat, ref_chan)
+
+    # Clamp window settings
+    s = float(start_value); e = float(end_value)
+    wsize = float(window_size_value); wstep = float(window_step_value)
+    if wsize <= 0: wsize = 10.0
+    if wstep <= 0: wstep = 5.0
+    if e < s: s, e = e, s
+
+    window_starts = []
+    current = s
+    while current <= e - wsize + 1e-6:
+        window_starts.append(current)
+        current += wstep
+
+    if len(window_starts) == 0:
+        raise ValueError(f"Invalid window settings: no windows formed (start={s}, end={e}, size={wsize}, step={wstep})")
+
+    windows = [(start, start + wsize) for start in window_starts]
+    nwindows = len(windows)
+
+    # Precompute outside distance and nearest labels for extension beyond the mask.
+    fg = masks > 0
+    dist_bg, idx = ndi.distance_transform_edt(~fg, return_indices=True)
+    nearest_label = masks[idx[0], idx[1]]
+
+    sum_t = np.zeros(nwindows, dtype=np.float64)
+    sum_r = np.zeros(nwindows, dtype=np.float64)
+    cnt = np.zeros(nwindows, dtype=np.int64)
+    sum_t2 = np.zeros(nwindows, dtype=np.float64)
+    sum_r2 = np.zeros(nwindows, dtype=np.float64)
+
+    for lab in labels:
+        cell = (masks == lab)
+        if not np.any(cell):
+            continue
+        di = ndi.distance_transform_edt(cell)
+        dmax = float(di.max())
+        if dmax <= 0:
+            continue
+
+        tin = inside_transform(di, dmax, dist_bg)
+        out_lab = (~fg) & (nearest_label == lab)
+        tout = outside_transform(dist_bg, dmax) if np.any(out_lab) else None
+
+        for k in range(nwindows):
+            a_val, b_val = windows[k]
+            idx_in = cell & (tin >= a_val) & (tin <= b_val)
+            if tout is not None:
+                idx_out = out_lab & (tout >= a_val) & (tout <= b_val)
+                idx_band = idx_in | idx_out
+            else:
+                idx_band = idx_in
+            n = int(np.count_nonzero(idx_band))
+            if n == 0:
+                continue
+            cnt[k] += n
+            vals_t = tgt_gray[idx_band]
+            vals_r = ref_gray[idx_band]
+            sum_t[k] += float(np.sum(vals_t))
+            sum_r[k] += float(np.sum(vals_r))
+            sum_t2[k] += float(np.sum(vals_t.astype(np.float64) ** 2))
+            sum_r2[k] += float(np.sum(vals_r.astype(np.float64) ** 2))
+
+    center_values = np.array([(a + b) / 2.0 for a, b in windows])
+    mean_t = np.full(nwindows, np.nan, dtype=float)
+    np.divide(sum_t, cnt, out=mean_t, where=cnt > 0)
+    mean_r = np.full(nwindows, np.nan, dtype=float)
+    np.divide(sum_r, cnt, out=mean_r, where=cnt > 0)
+    num_t = sum_t2 - np.divide(sum_t ** 2, cnt, out=np.zeros_like(sum_t2), where=cnt > 0)
+    num_r = sum_r2 - np.divide(sum_r ** 2, cnt, out=np.zeros_like(sum_r2), where=cnt > 0)
+    var_t = np.full(nwindows, np.nan, dtype=float)
+    var_r = np.full(nwindows, np.nan, dtype=float)
+    np.divide(num_t, (cnt - 1), out=var_t, where=cnt > 1)
+    np.divide(num_r, (cnt - 1), out=var_r, where=cnt > 1)
+    std_t = np.sqrt(var_t)
+    std_r = np.sqrt(var_r)
+    sem_t = np.full(nwindows, np.nan, dtype=float)
+    sem_r = np.full(nwindows, np.nan, dtype=float)
+    np.divide(std_t, np.sqrt(cnt, dtype=float), out=sem_t, where=cnt > 0)
+    np.divide(std_r, np.sqrt(cnt, dtype=float), out=sem_r, where=cnt > 0)
+
+    mean_ratio = np.full(nwindows, np.nan, dtype=float)
+    std_ratio = np.full(nwindows, np.nan, dtype=float)
+    cnt_ratio = np.zeros(nwindows, dtype=np.int64)
+    eps_ratio = max(1e-12, float(ratio_ref_epsilon))
+    for k in range(nwindows):
+        a_val, b_val = windows[k]
+        acc = []
+        for lab in labels:
+            cell = (masks == lab)
+            if not np.any(cell):
+                continue
+            di = ndi.distance_transform_edt(cell)
+            dmax = float(di.max())
+            if dmax <= 0:
+                continue
+            tin = inside_transform(di, dmax, dist_bg)
+            out_lab = (~fg) & (nearest_label == lab)
+            tout = outside_transform(dist_bg, dmax) if np.any(out_lab) else None
+            idx_in = cell & (tin >= a_val) & (tin <= b_val)
+            if tout is not None:
+                idx_out = out_lab & (tout >= a_val) & (tout <= b_val)
+                idx_band = idx_in | idx_out
+            else:
+                idx_band = idx_in
+            if np.count_nonzero(idx_band) == 0:
+                continue
+            tv = tgt_gray[idx_band].astype(np.float64)
+            rv = ref_gray[idx_band].astype(np.float64)
+            rr = (tv + eps_ratio) / (rv + eps_ratio)
+            acc.append(rr)
+        if len(acc) > 0:
+            allv = np.concatenate(acc)
+            if allv.size:
+                mean_ratio[k] = float(np.mean(allv))
+                std_ratio[k] = float(np.std(allv, ddof=1)) if allv.size > 1 else np.nan
+                cnt_ratio[k] = int(allv.size)
+
+    start_col = f"band_start_{axis_suffix}"
+    end_col = f"band_end_{axis_suffix}"
+    center_col = f"center_{axis_suffix}"
+
+    sem_ratio_arr = np.full(nwindows, np.nan, dtype=float)
+    np.divide(std_ratio, np.sqrt(cnt_ratio, dtype=float), out=sem_ratio_arr, where=cnt_ratio > 0)
+    df = pd.DataFrame({
+        start_col: [a for a, b in windows],
+        end_col: [b for a, b in windows],
+        center_col: center_values,
+        "count_px": cnt,
+        "mean_target": mean_t,
+        "mean_reference": mean_r,
+        "std_target": std_t,
+        "std_reference": std_r,
+        "sem_target": sem_t,
+        "sem_reference": sem_r,
+        "mean_ratio_T_over_R": mean_ratio,
+        "std_ratio_T_over_R": std_ratio,
+        "sem_ratio_T_over_R": sem_ratio_arr,
+        "count_ratio_px": cnt_ratio,
+    })
+    tmp_csv = tempfile.NamedTemporaryFile(delete=False, suffix=csv_suffix)
+    df.to_csv(tmp_csv.name, index=False)
+
+    fig, ax1 = plt.subplots(figsize=(6, 4))
+    ma_t = _moving_average_nan(mean_t, int(window_bins)) if window_bins and window_bins > 1 else mean_t
+    ma_r = _moving_average_nan(mean_r, int(window_bins)) if window_bins and window_bins > 1 else mean_r
+    if show_errorbars:
+        ax1.errorbar(center_values, ma_t, yerr=sem_t, fmt='-o', ms=3, capsize=2, label="Target", color="tab:red", alpha=0.9)
+        ax1.errorbar(center_values, ma_r, yerr=sem_r, fmt='-o', ms=3, capsize=2, label="Reference", color="tab:blue", alpha=0.9)
+    else:
+        ax1.plot(center_values, ma_t, label="Target", color="tab:red")
+        ax1.plot(center_values, ma_r, label="Reference", color="tab:blue")
+    ax1.set_xlabel(x_label)
+    ax1.set_ylabel("Mean intensity")
+    ax1.grid(True, alpha=0.3)
+    ax2 = ax1.twinx()
+    ma_ratio = _moving_average_nan(mean_ratio, int(window_bins)) if window_bins and window_bins > 1 else mean_ratio
+    if show_errorbars:
+        ax2.errorbar(center_values, ma_ratio, yerr=sem_ratio_arr, fmt='-s', ms=3, capsize=2, label="T/R", color="tab:green", alpha=0.9)
+    else:
+        ax2.plot(center_values, ma_ratio, label="T/R", color="tab:green", linestyle="--")
+    ax2.set_ylabel("Mean ratio (T/R)")
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc="best")
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+    prof_plot = Image.open(buf).copy()
+    buf.close()
+    return df, tmp_csv.name, prof_plot
+
 def radial_profile_analysis(
     target_img: Image.Image,
     reference_img: Image.Image,
@@ -131,232 +376,52 @@ def radial_profile_analysis(
     show_errorbars: bool = True,
     ratio_ref_epsilon: float = 0.0,
 ):
-    if masks is None:
-        raise ValueError("Segmentation masks not provided. Run segmentation first.")
-    labels = np.unique(masks); labels = labels[labels > 0]
-    if labels.size == 0:
-        raise ValueError("No cells found in masks.")
-    # Preprocess images (skip if both BG and normalization are disabled to avoid double processing)
-    if not bool(pp_bg_enable) and not bool(pp_norm_enable):
-        # Use native-scale arrays without any correction/normalization
-        tgt_nat = pil_to_numpy_native(target_img)
-        ref_nat = pil_to_numpy_native(reference_img)
-    else:
-        tgt_nat = preprocess_for_processing(
-            target_img, use_native_scale=True,
-            bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
-            norm_enable=pp_norm_enable, norm_method=pp_norm_method,
-            manual_background=manual_tar_bg,
-        )
-        ref_nat = preprocess_for_processing(
-            reference_img, use_native_scale=True,
-            bg_enable=pp_bg_enable, bg_radius=pp_bg_radius, bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
-            norm_enable=pp_norm_enable, norm_method=pp_norm_method,
-            manual_background=manual_ref_bg,
-        )
-    tgt_gray = extract_single_channel(tgt_nat, tgt_chan)
-    ref_gray = extract_single_channel(ref_nat, ref_chan)
+    return _radial_profile_analysis_impl(
+        target_img, reference_img, masks,
+        tgt_chan, ref_chan,
+        start_pct, end_pct, window_size_pct, window_step_pct,
+        pp_bg_enable, pp_bg_radius, pp_norm_enable, pp_norm_method,
+        bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+        manual_tar_bg=manual_tar_bg, manual_ref_bg=manual_ref_bg,
+        window_bins=window_bins, show_errorbars=show_errorbars,
+        ratio_ref_epsilon=ratio_ref_epsilon,
+        axis_mode="pct",
+    )
 
-    # Clamp window settings
-    s = float(start_pct); e = float(end_pct)
-    wsize = float(window_size_pct); wstep = float(window_step_pct)
-    if wsize <= 0: wsize = 10.0
-    if wstep <= 0: wstep = 5.0
-    if e < s: s, e = e, s
-    
-    # Generate window starts from s to e-wsize (inclusive) with step wstep
-    window_starts = []
-    current = s
-    while current <= e - wsize + 1e-6:
-        window_starts.append(current)
-        current += wstep
-    
-    if len(window_starts) == 0:
-        raise ValueError(f"Invalid window settings: no windows formed (start={s}, end={e}, size={wsize}, step={wstep})")
-    
-    windows = [(start, start + wsize) for start in window_starts]
-    nwindows = len(windows)
-
-    # Precompute outside distance and nearest labels for extension >100%
-    fg = masks > 0
-    dist_bg, idx = ndi.distance_transform_edt(~fg, return_indices=True)
-    nearest_label = masks[idx[0], idx[1]]
-
-    # Accumulators per window
-    sum_t = np.zeros(nwindows, dtype=np.float64)
-    sum_r = np.zeros(nwindows, dtype=np.float64)
-    cnt = np.zeros(nwindows, dtype=np.int64)
-    # second moment for std
-    sum_t2 = np.zeros(nwindows, dtype=np.float64)
-    sum_r2 = np.zeros(nwindows, dtype=np.float64)
-
-    # Loop per cell, compute inside/outside normalized radii and accumulate
-    for lab in labels:
-        cell = (masks == lab)
-        if not np.any(cell):
-            continue
-        di = ndi.distance_transform_edt(cell)
-        dmax = float(di.max())
-        if dmax <= 0:
-            continue
-        # inside: t in [0,1]
-        tin = 1.0 - (di / dmax)
-        # outside assigned to this label
-        out_lab = (~fg) & (nearest_label == lab)
-        if np.any(out_lab):
-            tout = np.zeros_like(tin, dtype=np.float32)
-            tout[out_lab] = 1.0 + (dist_bg[out_lab].astype(np.float32) / dmax)
-        else:
-            tout = None
-
-        # Accumulate per window
-        for k in range(nwindows):
-            a_pct, b_pct = windows[k]
-            a = a_pct / 100.0
-            b = b_pct / 100.0
-            # include both endpoints for the window
-            idx_in = cell & (tin >= a) & (tin <= b)
-            if tout is not None:
-                idx_out = out_lab & (tout >= a) & (tout <= b)
-            else:
-                idx_out = None
-            if idx_out is not None:
-                idx_band = idx_in | idx_out
-            else:
-                idx_band = idx_in
-            n = int(np.count_nonzero(idx_band))
-            if n == 0:
-                continue
-            cnt[k] += n
-            vals_t = tgt_gray[idx_band]
-            vals_r = ref_gray[idx_band]
-            sum_t[k] += float(np.sum(vals_t))
-            sum_r[k] += float(np.sum(vals_r))
-            sum_t2[k] += float(np.sum(vals_t.astype(np.float64) ** 2))
-            sum_r2[k] += float(np.sum(vals_r.astype(np.float64) ** 2))
-
-    # Build results
-    center_pct = np.array([(a + b) / 2.0 for a, b in windows])
-    # means with masked division (avoid warnings)
-    mean_t = np.full(nwindows, np.nan, dtype=float)
-    np.divide(sum_t, cnt, out=mean_t, where=cnt > 0)
-    mean_r = np.full(nwindows, np.nan, dtype=float)
-    np.divide(sum_r, cnt, out=mean_r, where=cnt > 0)
-    # unbiased variance estimate; guard small n using masked division
-    num_t = sum_t2 - np.divide(sum_t ** 2, cnt, out=np.zeros_like(sum_t2), where=cnt > 0)
-    num_r = sum_r2 - np.divide(sum_r ** 2, cnt, out=np.zeros_like(sum_r2), where=cnt > 0)
-    var_t = np.full(nwindows, np.nan, dtype=float)
-    var_r = np.full(nwindows, np.nan, dtype=float)
-    np.divide(num_t, (cnt - 1), out=var_t, where=cnt > 1)
-    np.divide(num_r, (cnt - 1), out=var_r, where=cnt > 1)
-    std_t = np.sqrt(var_t)
-    std_r = np.sqrt(var_r)
-    sem_t = np.full(nwindows, np.nan, dtype=float)
-    sem_r = np.full(nwindows, np.nan, dtype=float)
-    np.divide(std_t, np.sqrt(cnt, dtype=float), out=sem_t, where=cnt > 0)
-    np.divide(std_r, np.sqrt(cnt, dtype=float), out=sem_r, where=cnt > 0)
-    # Ratio on pixels where reference > 0: approximate using means (optionally) or recompute per-pixel
-    # Here we use mean of per-pixel ratio by sampling mask again per window for better fidelity
-    mean_ratio = np.full(nwindows, np.nan, dtype=float)
-    std_ratio = np.full(nwindows, np.nan, dtype=float)
-    cnt_ratio = np.zeros(nwindows, dtype=np.int64)
-    eps_ratio = max(1e-12, float(ratio_ref_epsilon))
-    for k in range(nwindows):
-        a_pct, b_pct = windows[k]
-        a = a_pct / 100.0
-        b = b_pct / 100.0
-        acc = []
-        for lab in labels:
-            cell = (masks == lab)
-            if not np.any(cell):
-                continue
-            di = ndi.distance_transform_edt(cell)
-            dmax = float(di.max())
-            if dmax <= 0:
-                continue
-            tin = 1.0 - (di / dmax)
-            out_lab = (~fg) & (nearest_label == lab)
-            tout = None
-            if np.any(out_lab):
-                tout = np.zeros_like(tin, dtype=np.float32)
-                tout[out_lab] = 1.0 + (dist_bg[out_lab].astype(np.float32) / dmax)
-            idx_in = cell & (tin >= a) & (tin <= b)
-            if tout is not None:
-                idx_out = out_lab & (tout >= a) & (tout <= b)
-                idx_band = idx_in | idx_out
-            else:
-                idx_band = idx_in
-            if np.count_nonzero(idx_band) == 0:
-                continue
-            tv = tgt_gray[idx_band].astype(np.float64)
-            rv = ref_gray[idx_band].astype(np.float64)
-            rr = (tv + eps_ratio) / (rv + eps_ratio)
-            acc.append(rr)
-        if len(acc) > 0:
-            allv = np.concatenate(acc)
-            if allv.size:
-                mean_ratio[k] = float(np.mean(allv))
-                std_ratio[k] = float(np.std(allv, ddof=1)) if allv.size > 1 else np.nan
-                cnt_ratio[k] = int(allv.size)
-
-    # Table
-    band_starts = [a for a, b in windows]
-    band_ends = [b for a, b in windows]
-    # precompute sem for ratio with masked division
-    sem_ratio_arr = np.full(nwindows, np.nan, dtype=float)
-    np.divide(std_ratio, np.sqrt(cnt_ratio, dtype=float), out=sem_ratio_arr, where=cnt_ratio > 0)
-    df = pd.DataFrame({
-        "band_start_pct": band_starts,
-        "band_end_pct": band_ends,
-        "center_pct": center_pct,
-        "count_px": cnt,
-        "mean_target": mean_t,
-        "mean_reference": mean_r,
-        "std_target": std_t,
-        "std_reference": std_r,
-        "sem_target": sem_t,
-        "sem_reference": sem_r,
-        "mean_ratio_T_over_R": mean_ratio,
-        "std_ratio_T_over_R": std_ratio,
-        "sem_ratio_T_over_R": sem_ratio_arr,
-        "count_ratio_px": cnt_ratio,
-    })
-    tmp_csv = tempfile.NamedTemporaryFile(delete=False, suffix="_radial_profile.csv")
-    df.to_csv(tmp_csv.name, index=False)
-
-    # Plot
-    fig, ax1 = plt.subplots(figsize=(6, 4))
-    ma_t = _moving_average_nan(mean_t, int(window_bins)) if window_bins and window_bins > 1 else mean_t
-    ma_r = _moving_average_nan(mean_r, int(window_bins)) if window_bins and window_bins > 1 else mean_r
-    # plot with optional error bars (SEM)
-    if show_errorbars:
-        ax1.errorbar(center_pct, ma_t, yerr=sem_t, fmt='-o', ms=3, capsize=2, label="Target", color="tab:red", alpha=0.9)
-        ax1.errorbar(center_pct, ma_r, yerr=sem_r, fmt='-o', ms=3, capsize=2, label="Reference", color="tab:blue", alpha=0.9)
-    else:
-        ax1.plot(center_pct, ma_t, label="Target", color="tab:red")
-        ax1.plot(center_pct, ma_r, label="Reference", color="tab:blue")
-    ax1.set_xlabel("Radial % (0=center, 100=boundary)")
-    ax1.set_ylabel("Mean intensity")
-    ax1.grid(True, alpha=0.3)
-    ax2 = ax1.twinx()
-    ma_ratio = _moving_average_nan(mean_ratio, int(window_bins)) if window_bins and window_bins > 1 else mean_ratio
-    if show_errorbars:
-        ax2.errorbar(center_pct, ma_ratio, yerr=sem_ratio_arr, fmt='-s', ms=3, capsize=2, label="T/R", color="tab:green", alpha=0.9)
-    else:
-        ax2.plot(center_pct, ma_ratio, label="T/R", color="tab:green", linestyle="--")
-    ax2.set_ylabel("Mean ratio (T/R)")
-    # Build combined legend
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc="best")
-    buf = io.BytesIO()
-    fig.tight_layout()
-    fig.savefig(buf, format="png", dpi=150)
-    plt.close(fig)
-    buf.seek(0)
-    prof_plot = Image.open(buf).copy()
-    buf.close()
-    return df, tmp_csv.name, prof_plot
+def radial_profile_analysis_px(
+    target_img: Image.Image,
+    reference_img: Image.Image,
+    masks: np.ndarray,
+    tgt_chan: int,
+    ref_chan: int,
+    start_px: float,
+    end_px: float,
+    window_size_px: float,
+    window_step_px: float,
+    pp_bg_enable: bool,
+    pp_bg_radius: int,
+    pp_norm_enable: bool,
+    pp_norm_method: str,
+    *,
+    bg_mode: str = "rolling",
+    bg_dark_pct: float = 5.0,
+    manual_tar_bg: float | None = None,
+    manual_ref_bg: float | None = None,
+    window_bins: int = 1,
+    show_errorbars: bool = True,
+    ratio_ref_epsilon: float = 0.0,
+):
+    return _radial_profile_analysis_impl(
+        target_img, reference_img, masks,
+        tgt_chan, ref_chan,
+        start_px, end_px, window_size_px, window_step_px,
+        pp_bg_enable, pp_bg_radius, pp_norm_enable, pp_norm_method,
+        bg_mode=bg_mode, bg_dark_pct=bg_dark_pct,
+        manual_tar_bg=manual_tar_bg, manual_ref_bg=manual_ref_bg,
+        window_bins=window_bins, show_errorbars=show_errorbars,
+        ratio_ref_epsilon=ratio_ref_epsilon,
+        axis_mode="px",
+    )
 
 def radial_profile_single(
     target_img: Image.Image,
@@ -1032,4 +1097,3 @@ def compute_radial_peak_difference(
         })
     
     return pd.DataFrame(results).sort_values("label")
-
