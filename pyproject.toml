@@ -12,6 +12,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
+    "numpy>=1.26,<2.0",
     "torch>=2.8,<3.0",
     "torchvision>=0.23,<1.0",
     "cellpose>=4.0.6,<5",
