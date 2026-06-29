@@ -58,7 +58,7 @@ _MODEL: Optional[models.CellposeModel] = None
 def get_model(use_gpu: bool = False) -> models.CellposeModel:
     global _MODEL
     if _MODEL is None:
-        _MODEL = models.CellposeModel(gpu=use_gpu, pretrained_model="cpsam")
+        _MODEL = models.CellposeModel(gpu=use_gpu, pretrained_model="cpdino")
     return _MODEL
 
 def pil_to_numpy(img: Image.Image) -> np.ndarray:
@@ -274,7 +274,6 @@ def run_segmentation(
         cellprob_threshold=cellprob_threshold,
         channels=[0, 0],
         normalize=True,
-        invert=False,
         compute_masks=True,
         progress=None,
     )

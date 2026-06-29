@@ -34,6 +34,7 @@ from .core import (
 from .radial import (
     radial_mask,
     radial_profile_analysis,
+    radial_profile_analysis_px,
     radial_profile_single,
     radial_profile_all_cells,
     compute_radial_peak_difference,
@@ -82,6 +83,7 @@ __all__ = [
     # Radial
     "radial_mask",
     "radial_profile_analysis",
+    "radial_profile_analysis_px",
     "radial_profile_single",
     "radial_profile_all_cells",
     "compute_radial_peak_difference",
