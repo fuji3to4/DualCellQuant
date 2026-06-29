@@ -1,6 +1,6 @@
 [project]
 name = "dualcellquant"
-version = "1.0.0"
+version = "1.0.1"
 description = ""
 authors = [{ name = "fuji3to4", email = "sfujii@bio.kyutech.ac.jp" }]
 requires-python = ">=3.11,<4"
